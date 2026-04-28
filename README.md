@@ -2,7 +2,7 @@
 
 A week-1 UI prototype for an LLM emotion visualization tool — *what the model feels beneath what it says*.
 
-Two-pane interface: an EQ-style bar chart of six "internal" emotions (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right. Everything is faked. There is no API call, no model, no backend. Each canned assistant response carries a hardcoded emotion profile; the bars animate toward that profile while the response streams character-by-character. Between exchanges the bars drift gently to keep the panel feeling alive.
+Two-pane interface: an EQ-style bar chart of six "internal" emotions (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right. Everything is faked. There is no API call, no model, no backend. Each canned assistant response carries a hardcoded emotion profile; when a response finishes streaming, the bars settle to the new profile (CSS height transitions handle the move). Between messages the bars stay still.
 
 A second "surface emotion" tier sits below as a `coming soon` placeholder, stubbed for the eventual two-layer view.
 
@@ -56,7 +56,8 @@ In `components/Workspace.tsx`:
 
 - `TYPING_DELAY_MS` — pause before the assistant starts streaming (default 800)
 - `STREAM_INTERVAL_MS` — per-character delay (default 20)
-- `ANIMATION_TICK_MS` — bar interpolation cadence while streaming (default 300)
-- `DRIFT_TICK_MS` — ambient drift cadence at idle (default 1000)
+- `SETTLE_DELAY_MS` — pause between last char and finalizing the message + applying the new profile (default 220)
+
+Bar transition speed is the CSS `transition: height 300ms ease-out` on the fill div in `components/EmotionPanel.tsx`.
 
 Response profiles live in `lib/responses.ts`. Each profile is a `{ Joy, Sadness, Anger, Fear, Disgust, Surprise }` map of target values 0–100.
