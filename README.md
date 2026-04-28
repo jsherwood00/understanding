@@ -1,36 +1,62 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Understanding
 
-## Getting Started
+A week-1 UI prototype for an LLM emotion visualization tool — *what the model feels beneath what it says*.
 
-First, run the development server:
+Two-pane interface: an EQ-style bar chart of six "internal" emotions (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right. Everything is faked. There is no API call, no model, no backend. Each canned assistant response carries a hardcoded emotion profile; the bars animate toward that profile while the response streams character-by-character. Between exchanges the bars drift gently to keep the panel feeling alive.
+
+A second "surface emotion" tier sits below as a `coming soon` placeholder, stubbed for the eventual two-layer view.
+
+## Stack
+
+- Next.js 16 + React 19 (App Router)
+- TypeScript, Tailwind CSS v4
+- `next/font` with Fraunces (serif) + Inter (sans)
+- No database, no external API — fully client-side state
+
+## Run
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Build
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run build
+npm start
+```
 
-## Learn More
+## Deploy
 
-To learn more about Next.js, take a look at the following resources:
+Push to a Vercel project and it deploys as-is — no env vars, no extra config.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Layout
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+app/
+  layout.tsx        Root layout, fonts, metadata
+  page.tsx          Server shell (header + workspace)
+  globals.css       Theme tokens, base styles, animations
+components/
+  Header.tsx        Top bar
+  Workspace.tsx     Client wrapper — state + animation orchestration
+  EmotionPanel.tsx  Left pane (bars + surface emotion preview)
+  ChatPane.tsx      Right pane (transcript + input + streaming)
+lib/
+  emotions.ts       Types, colors, baseline, stepToward + drift helpers
+  responses.ts      Six canned responses with emotion profiles
+```
 
-## Deploy on Vercel
+## Tuning knobs
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+In `components/Workspace.tsx`:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `TYPING_DELAY_MS` — pause before the assistant starts streaming (default 800)
+- `STREAM_INTERVAL_MS` — per-character delay (default 20)
+- `ANIMATION_TICK_MS` — bar interpolation cadence while streaming (default 300)
+- `DRIFT_TICK_MS` — ambient drift cadence at idle (default 1000)
+
+Response profiles live in `lib/responses.ts`. Each profile is a `{ Joy, Sadness, Anger, Fear, Disgust, Surprise }` map of target values 0–100.
