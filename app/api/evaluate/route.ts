@@ -9,7 +9,7 @@ export const runtime = "nodejs";
 
 const TURNS_DIR = path.join(process.cwd(), "runtime", "turns");
 const POLL_INTERVAL_MS = 250;
-const TIMEOUT_MS = 60_000;
+const TIMEOUT_MS = 120_000;
 
 interface IncomingMessage {
   role: "user" | "assistant";
