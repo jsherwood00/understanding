@@ -11,6 +11,7 @@ interface EmotionPanelProps {
   turns: Turn[];
   viewingIndex: number | null;
   snapshotIndex: number;
+  selectedExcerpt: string | null;
   onNavigate: (direction: -1 | 1) => void;
   onScrub: (snapIdx: number) => void;
   onReplayTurn: () => void;
@@ -38,8 +39,25 @@ export function EmotionPanel(props: EmotionPanelProps) {
         ))}
       </div>
 
-      <TurnNavigator {...props} />
+      {props.selectedExcerpt ? (
+        <ExcerptIndicator text={props.selectedExcerpt} />
+      ) : (
+        <TurnNavigator {...props} />
+      )}
     </section>
+  );
+}
+
+function ExcerptIndicator({ text }: { text: string }) {
+  return (
+    <div className="mt-8 border-t border-divider pt-4">
+      <div className="text-[10px] tracking-[0.16em] text-ink-faint uppercase">
+        Selected excerpt
+      </div>
+      <div className="mt-2 line-clamp-3 text-[12px] text-ink-muted italic">
+        “{text}”
+      </div>
+    </div>
   );
 }
 

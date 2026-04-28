@@ -1,18 +1,13 @@
 import { type EmotionValues } from "@/lib/emotions";
-import { analyzeEmotions } from "@/lib/sentiment";
+import { analyzeEmotions, deriveThinking } from "@/lib/sentiment";
 
 export const runtime = "nodejs";
 
 const FAL_URL = "https://fal.run/fal-ai/any-llm";
 const MODEL = "google/gemini-2.5-flash";
 
-// How many words per chunk emit, and how many trailing words to include in
-// each chunk's sentiment analysis context window.
-const CHUNK_WORDS = 10;
+const CHUNK_WORDS = 20;
 const ANALYSIS_WINDOW_WORDS = 30;
-
-// Pacing: ms per word emit when streaming the output. Thinking is emitted
-// once at start (we already have the full trace).
 const WORD_EMIT_INTERVAL_MS = 25;
 
 interface IncomingMessage {
@@ -31,7 +26,6 @@ function isValidIncoming(m: unknown): m is IncomingMessage {
 }
 
 function formatPrompt(messages: IncomingMessage[]): string {
-  // Plain transcript, no system instruction, no JSON wrapping.
   const lines: string[] = [];
   for (const m of messages) {
     const label = m.role === "user" ? "User" : "Assistant";
@@ -61,6 +55,17 @@ function jsonResponse(payload: unknown, status: number) {
     status,
     headers: { "Content-Type": "application/json" },
   });
+}
+
+function zeros(): EmotionValues {
+  return {
+    Joy: 0,
+    Sadness: 0,
+    Anger: 0,
+    Fear: 0,
+    Disgust: 0,
+    Surprise: 0,
+  };
 }
 
 export async function POST(request: Request) {
@@ -95,7 +100,6 @@ export async function POST(request: Request) {
   }
   const messages = messagesRaw as IncomingMessage[];
 
-  // Call fal.ai (synchronous — any-llm doesn't expose token streaming).
   let falData: { output?: string; reasoning?: string; error?: string };
   try {
     const res = await fetch(FAL_URL, {
@@ -108,7 +112,6 @@ export async function POST(request: Request) {
         model: MODEL,
         prompt: formatPrompt(messages),
         reasoning: true,
-        // No system_prompt — let the model respond naturally.
       }),
     });
     if (!res.ok) {
@@ -139,8 +142,15 @@ export async function POST(request: Request) {
     return jsonResponse({ error: "Model returned an empty reply." }, 502);
   }
 
-  // Stream SSE: thinking event first (full text + emotions), then output
-  // chunks (10 words each + rolling sentiment), then done.
+  // Combined word stream: thinking words first (already complete), then
+  // reply words (streamed). Output emotions analyze a rolling 30-word window
+  // across the COMBINED stream, every 20 reply words.
+  const thinkingWords = thinkingText
+    ? thinkingText.split(/\s+/).filter(Boolean)
+    : [];
+  const replyWords = replyText.split(/\s+/).filter(Boolean);
+  const combinedSoFar = [...thinkingWords]; // append reply words as they emit
+
   const encoder = new TextEncoder();
   const abortSignal = request.signal;
 
@@ -157,38 +167,30 @@ export async function POST(request: Request) {
         }
       };
 
-      // 1. Thinking — emit once with full text + emotions
-      const thinkingEmotions = thinkingText
-        ? analyzeEmotions(thinkingText)
-        : zeros();
-      emit({
-        type: "thinking",
-        text: thinkingText,
-        emotions: thinkingEmotions,
-      });
+      // 1. Thinking event — text only. Emotions intentionally zero; the
+      //    "thinking" vector is derived from the final output at done.
+      emit({ type: "thinking", text: thinkingText, emotions: zeros() });
 
-      // 2. Output — chunked, with rolling 30-word sentiment context
-      const outputWords = replyText.split(/\s+/).filter(Boolean);
-      let emittedSoFar = "";
+      // 2. Output streaming
       let lastChunkAtIdx = 0;
-
-      for (let i = 0; i < outputWords.length; i++) {
+      for (let i = 0; i < replyWords.length; i++) {
         if (abortSignal.aborted) {
           controller.close();
           return;
         }
 
-        const word = outputWords[i];
-        emittedSoFar = emittedSoFar
-          ? `${emittedSoFar} ${word}`
-          : word;
+        const word = replyWords[i];
+        combinedSoFar.push(word);
         emit({ type: "output_word", text: word, index: i });
 
         const wordsSinceLastChunk = i + 1 - lastChunkAtIdx;
-        const isLast = i === outputWords.length - 1;
+        const isLast = i === replyWords.length - 1;
         if (wordsSinceLastChunk >= CHUNK_WORDS || isLast) {
-          const windowStart = Math.max(0, i + 1 - ANALYSIS_WINDOW_WORDS);
-          const window = outputWords.slice(windowStart, i + 1).join(" ");
+          const windowStart = Math.max(
+            0,
+            combinedSoFar.length - ANALYSIS_WINDOW_WORDS,
+          );
+          const window = combinedSoFar.slice(windowStart).join(" ");
           const emotions = analyzeEmotions(window);
           emit({
             type: "output_emotions",
@@ -201,11 +203,13 @@ export async function POST(request: Request) {
         await sleep(WORD_EMIT_INTERVAL_MS);
       }
 
-      // 3. Done
-      const finalOutputEmotions = analyzeEmotions(replyText);
+      // 3. Done — final emotions
+      const finalCombined = `${thinkingText}\n\n${replyText}`;
+      const outputEmotions = analyzeEmotions(finalCombined);
+      const thinkingEmotions = deriveThinking(outputEmotions);
       emit({
         type: "done",
-        outputEmotions: finalOutputEmotions,
+        outputEmotions,
         thinkingEmotions,
         fullText: replyText,
         fullThinking: thinkingText,
@@ -224,15 +228,4 @@ export async function POST(request: Request) {
       Connection: "keep-alive",
     },
   });
-}
-
-function zeros(): EmotionValues {
-  return {
-    Joy: 0,
-    Sadness: 0,
-    Anger: 0,
-    Fear: 0,
-    Disgust: 0,
-    Surprise: 0,
-  };
 }

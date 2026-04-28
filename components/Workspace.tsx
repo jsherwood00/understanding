@@ -1,13 +1,15 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BASELINE_STATE,
+  EMOTIONS,
   type EmotionState,
   type EmotionValues,
   type OutputSnapshot,
   type Turn,
 } from "@/lib/emotions";
+import { analyzeEmotions } from "@/lib/sentiment";
 import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
 
@@ -25,6 +27,13 @@ interface SSEEvent {
 
 const REPLAY_PER_SNAPSHOT_MS = 220;
 const REPLAY_FINAL_HOLD_MS = 700;
+const SELECTION_MIN_CHARS = 3;
+
+function zeros(): EmotionValues {
+  const z = {} as EmotionValues;
+  for (const e of EMOTIONS) z[e] = 0;
+  return z;
+}
 
 export function Workspace() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -42,11 +51,42 @@ export function Workspace() {
   const [snapshotIndex, setSnapshotIndex] = useState(0);
   const [isReplaying, setIsReplaying] = useState(false);
 
+  const [selectedExcerpt, setSelectedExcerpt] = useState<string | null>(null);
+
   const abortControllerRef = useRef<AbortController | null>(null);
   const replayAbortRef = useRef(false);
   const savedViewRef = useRef<{ turn: number | null; snap: number } | null>(
     null,
   );
+
+  // Listen for text selection anywhere — when a non-trivial selection exists
+  // override the bars with that text's analyzed emotions.
+  useEffect(() => {
+    function onSelectionChange() {
+      const selection = window.getSelection();
+      if (!selection) {
+        setSelectedExcerpt(null);
+        return;
+      }
+      const text = selection.toString().trim();
+      if (text.length < SELECTION_MIN_CHARS) {
+        setSelectedExcerpt((curr) => (curr === null ? curr : null));
+        return;
+      }
+      setSelectedExcerpt(text);
+    }
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () =>
+      document.removeEventListener("selectionchange", onSelectionChange);
+  }, []);
+
+  // Bars actually rendered — selection overrides everything else.
+  const displayedBars = useMemo<EmotionState>(() => {
+    if (selectedExcerpt) {
+      return { output: analyzeEmotions(selectedExcerpt), thinking: zeros() };
+    }
+    return bars;
+  }, [selectedExcerpt, bars]);
 
   function applyTurnView(turnIdx: number, snapIdx: number) {
     const turn = turns[turnIdx];
@@ -138,10 +178,8 @@ export function Workspace() {
               const traceText = data.text ?? "";
               finalThinking = traceText.length > 0 ? traceText : null;
               setStreamingThinking(finalThinking);
-              if (data.emotions) {
-                thinkingEmotions = data.emotions;
-                setBars((prev) => ({ ...prev, thinking: data.emotions! }));
-              }
+              // Thinking emotions are intentionally zero during streaming;
+              // the real "thinking" vector is derived from final output at done.
               break;
             }
             case "output_word": {
@@ -169,16 +207,6 @@ export function Workspace() {
               const fullThinking = data.fullThinking ?? finalThinking;
               outputEmotions = data.outputEmotions ?? outputEmotions;
               thinkingEmotions = data.thinkingEmotions ?? thinkingEmotions;
-              if (
-                outputSnapshots.length === 0 ||
-                outputSnapshots[outputSnapshots.length - 1].emotions !==
-                  outputEmotions
-              ) {
-                outputSnapshots.push({
-                  atWord: fullText.split(/\s+/).filter(Boolean).length,
-                  emotions: outputEmotions,
-                });
-              }
               setMessages((m) => [
                 ...m,
                 {
@@ -209,7 +237,9 @@ export function Workspace() {
               setTurns((t) => {
                 const next = [...t, newTurn];
                 setViewingIndex(next.length - 1);
-                setSnapshotIndex(newTurn.outputSnapshots.length - 1);
+                setSnapshotIndex(
+                  Math.max(0, newTurn.outputSnapshots.length - 1),
+                );
                 return next;
               });
               break;
@@ -218,8 +248,7 @@ export function Workspace() {
         }
       }
     } catch (e) {
-      const isAbort =
-        e instanceof DOMException && e.name === "AbortError";
+      const isAbort = e instanceof DOMException && e.name === "AbortError";
       if (!isAbort) {
         setError(e instanceof Error ? e.message : "Something went wrong.");
       }
@@ -250,7 +279,7 @@ export function Workspace() {
         setTurns((t) => {
           const next = [...t, newTurn];
           setViewingIndex(next.length - 1);
-          setSnapshotIndex(newTurn.outputSnapshots.length - 1);
+          setSnapshotIndex(Math.max(0, newTurn.outputSnapshots.length - 1));
           return next;
         });
       }
@@ -353,10 +382,11 @@ export function Workspace() {
     <>
       <div className="w-2/5 border-r border-divider">
         <EmotionPanel
-          state={bars}
+          state={displayedBars}
           turns={turns}
           viewingIndex={viewingIndex}
           snapshotIndex={snapshotIndex}
+          selectedExcerpt={selectedExcerpt}
           onNavigate={navigateTurn}
           onScrub={handleScrub}
           onReplayTurn={handleReplayTurn}
