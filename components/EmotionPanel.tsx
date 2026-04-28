@@ -83,15 +83,8 @@ function Bar({
 
 function Legend() {
   return (
-    <div className="flex items-center gap-3 text-[10px] tracking-[0.12em] text-ink-faint uppercase">
-      <span className="flex items-center gap-1.5">
-        <span className="h-2 w-1 rounded-sm bg-ink-soft" />
-        internal
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span className="h-2 w-2.5 rounded-sm bg-ink-soft/40" />
-        surface
-      </span>
+    <div className="text-[10px] tracking-[0.12em] text-ink-faint uppercase">
+      darker = internal · lighter = surface
     </div>
   );
 }
