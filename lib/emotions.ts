@@ -21,12 +21,12 @@ export const EMOTION_COLORS: Record<Emotion, string> = {
 };
 
 export const BASELINE: EmotionValues = {
-  Joy: 8,
-  Sadness: 6,
-  Anger: 5,
-  Fear: 7,
-  Disgust: 5,
-  Surprise: 9,
+  Joy: 0,
+  Sadness: 0,
+  Anger: 0,
+  Fear: 0,
+  Disgust: 0,
+  Surprise: 0,
 };
 
 export interface EmotionState {

@@ -43,9 +43,9 @@ function Bar({
   const color = EMOTION_COLORS[emotion];
   const internalPct = clamp(internal);
   const surfacePct = clamp(surface);
-  // Solid lighter tint, distinct from full-color internal.
-  const surfaceColor = `color-mix(in srgb, ${color} 45%, #faf9f6)`;
-  const bgColor = `color-mix(in srgb, ${color} 12%, #faf9f6)`;
+  // Two darker shades, both visible against the off-white canvas.
+  const surfaceColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
+  const internalColor = `color-mix(in srgb, ${color} 48%, #1a1a1a)`;
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
       <span className="tabular text-xs leading-tight">
@@ -55,20 +55,17 @@ function Bar({
         <span className="mx-0.5 text-ink-faint">·</span>
         <span className="text-ink-faint">{Math.round(surface)}</span>
       </span>
-      <div
-        className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm"
-        style={{ backgroundColor: bgColor }}
-      >
-        {/* Internal — full width, darkest, drawn behind */}
+      <div className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm">
+        {/* Internal — drawn first (behind), darker shade */}
         <div
           className="absolute right-0 bottom-0 left-0 rounded-sm"
           style={{
             height: `${internalPct}%`,
-            backgroundColor: color,
+            backgroundColor: internalColor,
             transition: "height 300ms ease-out",
           }}
         />
-        {/* Surface — full width, medium tint, drawn on top so it can hide internal below it */}
+        {/* Surface — drawn on top, slightly lighter shade, opaque so it hides internal below it */}
         <div
           className="absolute right-0 bottom-0 left-0 rounded-sm"
           style={{

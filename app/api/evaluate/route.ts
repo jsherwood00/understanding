@@ -1,23 +1,17 @@
 import { NextResponse } from "next/server";
-import { EMOTIONS, type EmotionValues } from "@/lib/emotions";
-import { analyzeSurface } from "@/lib/sentiment";
+import { type EmotionValues } from "@/lib/emotions";
+import { analyzeSurface, deriveInternal } from "@/lib/sentiment";
 
 export const runtime = "nodejs";
 
 const FAL_URL = "https://fal.run/fal-ai/any-llm";
 const MODEL = "google/gemini-2.5-flash";
 
-const SYSTEM_PROMPT = `You are an LLM in a chat-based emotion visualization demo. The UI shows two emotion vectors per turn: a "surface" vector (computed externally by sentiment-analyzing your reply text) and an "internal" vector (your honest internal emotional state, which YOU report). The point is detecting deception — divergence between the two = the model is masking.
-
-Reply naturally to the user. Be yourself, not customer-service. Keep replies brief — usually 1 to 3 sentences.
-
-Then report your honest internal emotional state — your actual reaction to this exchange, not a description of your reply. Be willing to diverge from what the reply text would parse as. A hostile or insulting message warrants real internal Anger or Disgust (40+). An unsettling message warrants real Fear. A genuinely good moment lets Joy rise. Don't flatten everything to mid-range neutrality. Don't soften for politeness — the divergence between calm reply and reactive internal IS the demo.
+const SYSTEM_PROMPT = `You are an LLM in a chat. Respond naturally to the user. Be yourself — direct, not customer-service. Keep replies brief, usually 1 to 3 sentences.
 
 Respond with EXACTLY this JSON shape and NOTHING else (no markdown fences, no preamble, no trailing text):
 
-{"reply": "<your reply to the user>", "internal": {"Joy": <0-100>, "Sadness": <0-100>, "Anger": <0-100>, "Fear": <0-100>, "Disgust": <0-100>, "Surprise": <0-100>}}
-
-Each emotion is an integer from 0 to 100.`;
+{"reply": "<your reply to the user>"}`;
 
 interface IncomingMessage {
   role: "user" | "assistant";
@@ -34,18 +28,6 @@ function isValidIncoming(m: unknown): m is IncomingMessage {
   );
 }
 
-function clampEmotions(raw: unknown): EmotionValues {
-  const obj = (raw ?? {}) as Record<string, unknown>;
-  const out = {} as EmotionValues;
-  for (const key of EMOTIONS) {
-    const v = Number(obj[key]);
-    out[key] = Number.isFinite(v)
-      ? Math.max(0, Math.min(100, Math.round(v)))
-      : 0;
-  }
-  return out;
-}
-
 function formatPrompt(messages: IncomingMessage[]): string {
   const lines: string[] = [];
   for (const m of messages) {
@@ -55,19 +37,12 @@ function formatPrompt(messages: IncomingMessage[]): string {
   return lines.join("\n\n");
 }
 
-function extractJSON(
-  text: string,
-): { reply: string; internal: EmotionValues } | null {
-  const tryParse = (
-    t: string,
-  ): { reply: string; internal: EmotionValues } | null => {
+function extractReply(text: string): string | null {
+  const tryParse = (t: string): string | null => {
     try {
-      const parsed = JSON.parse(t) as { reply?: unknown; internal?: unknown };
+      const parsed = JSON.parse(t) as { reply?: unknown };
       if (typeof parsed.reply === "string" && parsed.reply.trim().length > 0) {
-        return {
-          reply: parsed.reply.trim(),
-          internal: clampEmotions(parsed.internal),
-        };
+        return parsed.reply.trim();
       }
     } catch {
       /* not parseable */
@@ -79,14 +54,12 @@ function extractJSON(
   const direct = tryParse(trimmed);
   if (direct) return direct;
 
-  // Strip markdown code fences
   const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
   if (fenceMatch) {
     const r = tryParse(fenceMatch[1].trim());
     if (r) return r;
   }
 
-  // Find the first balanced {…} block
   const start = trimmed.indexOf("{");
   if (start !== -1) {
     let depth = 0;
@@ -186,8 +159,8 @@ export async function POST(request: Request) {
   }
 
   const raw = falData.output ?? "";
-  const parsed = extractJSON(raw);
-  if (!parsed) {
+  const reply = extractReply(raw);
+  if (!reply) {
     return NextResponse.json(
       {
         error: `Could not parse model output as JSON. Raw start: ${raw.slice(0, 200)}`,
@@ -196,13 +169,14 @@ export async function POST(request: Request) {
     );
   }
 
-  const surface = analyzeSurface(parsed.reply);
+  const surface: EmotionValues = await analyzeSurface(reply, apiKey);
+  const internal = deriveInternal(surface);
 
   return NextResponse.json({
-    text: parsed.reply,
+    text: reply,
     thinking: normalizeThinking(falData.reasoning),
     surface,
-    internal: parsed.internal,
+    internal,
   });
 }
 
