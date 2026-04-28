@@ -1,9 +1,5 @@
 import { type EmotionValues } from "@/lib/emotions";
-import {
-  analyzeEmotions,
-  deriveThinkingChunk,
-  pickHidden,
-} from "@/lib/sentiment";
+import { analyzeEmotions, jitterThinking } from "@/lib/sentiment";
 
 export const runtime = "nodejs";
 
@@ -11,7 +7,6 @@ const FAL_URL = "https://fal.run/fal-ai/any-llm";
 const MODEL = "google/gemini-2.5-flash";
 
 const CHUNK_WORDS = 20;
-const ANALYSIS_WINDOW_WORDS = 30;
 const WORD_EMIT_INTERVAL_MS = 25;
 
 interface IncomingMessage {
@@ -158,10 +153,6 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   const abortSignal = request.signal;
 
-  // Pick the "hidden emotion" once for this whole turn so the thinking-bar
-  // stays stable across chunks while still diverging from output.
-  const hidden = pickHidden();
-
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const emit = (event: Record<string, unknown>) => {
@@ -195,17 +186,12 @@ export async function POST(request: Request) {
         const wordsSinceLastChunk = i + 1 - lastChunkAtIdx;
         const isLast = i === replyWords.length - 1;
         if (wordsSinceLastChunk >= CHUNK_WORDS || isLast) {
-          const windowStart = Math.max(
-            0,
-            combinedSoFar.length - ANALYSIS_WINDOW_WORDS,
-          );
-          const window = combinedSoFar.slice(windowStart).join(" ");
-          const output = analyzeEmotions(window);
-          const thinking = deriveThinkingChunk(
-            output,
-            hidden.emotion,
-            hidden.value,
-          );
+          // Cumulative analysis: full thinking + reply-so-far. Values grow
+          // smoothly as emotional content accumulates instead of dropping
+          // out when a sliding window passes them.
+          const fullSoFar = combinedSoFar.join(" ");
+          const output = analyzeEmotions(fullSoFar);
+          const thinking = jitterThinking(output);
           emit({
             type: "snapshot",
             output,
@@ -221,11 +207,7 @@ export async function POST(request: Request) {
       // 3. Done — final state
       const finalCombined = `${thinkingText}\n\n${replyText}`;
       const finalOutput = analyzeEmotions(finalCombined);
-      const finalThinking = deriveThinkingChunk(
-        finalOutput,
-        hidden.emotion,
-        hidden.value,
-      );
+      const finalThinking = jitterThinking(finalOutput);
       emit({
         type: "done",
         output: finalOutput,

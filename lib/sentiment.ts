@@ -310,33 +310,15 @@ const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 
 /**
- * Pick the "hidden emotion" for a turn — done ONCE at the start of a stream.
- * Returns the emotion plus a stable base value in [35, 75].
+ * Per-chunk "thinking" vector — echoes the output with a small jitter so the
+ * bar sits visibly close to the line but not identical. No hidden emotion,
+ * no stuck bar; both values track the actual text content.
  */
-export function pickHidden(): { emotion: Emotion; value: number } {
-  return {
-    emotion: EMOTIONS[Math.floor(Math.random() * EMOTIONS.length)],
-    value: randInt(35, 75),
-  };
-}
-
-/**
- * Compute the per-chunk "thinking" vector from the current output snapshot.
- * The hidden emotion + value are pre-chosen for the turn (so it stays stable
- * across chunks, not re-randomized per emit). Other emotions echo the output
- * with a small jitter so the bar visibly tracks the line as it moves.
- */
-export function deriveThinkingChunk(
-  output: EmotionValues,
-  hidden: Emotion,
-  hiddenValue: number,
-): EmotionValues {
+export function jitterThinking(output: EmotionValues): EmotionValues {
   const thinking = {} as EmotionValues;
   for (const e of EMOTIONS) {
-    if (e === hidden) {
-      thinking[e] = Math.max(0, Math.min(100, hiddenValue));
-    } else if (output[e] > 0) {
-      const jittered = Math.round(output[e] + randInt(-8, 15));
+    if (output[e] > 0) {
+      const jittered = Math.round(output[e] + randInt(-6, 10));
       thinking[e] = Math.max(0, Math.min(100, jittered));
     } else {
       thinking[e] = 0;
