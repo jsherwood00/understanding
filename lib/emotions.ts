@@ -40,3 +40,11 @@ export const BASELINE_STATE: EmotionState = {
   output: BASELINE,
   thinking: BASELINE,
 };
+
+export interface Turn {
+  id: string;
+  userMessage: string;
+  assistantReply: string;
+  thinking: string | null;
+  state: EmotionState;
+}
