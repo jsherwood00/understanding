@@ -43,6 +43,9 @@ function Bar({
   const color = EMOTION_COLORS[emotion];
   const internalPct = clamp(internal);
   const surfacePct = clamp(surface);
+  // Solid lighter tint, distinct from full-color internal.
+  const surfaceColor = `color-mix(in srgb, ${color} 45%, #faf9f6)`;
+  const bgColor = `color-mix(in srgb, ${color} 12%, #faf9f6)`;
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
       <span className="tabular text-xs leading-tight">
@@ -54,24 +57,23 @@ function Bar({
       </span>
       <div
         className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm"
-        style={{ backgroundColor: `${color}1a` }}
+        style={{ backgroundColor: bgColor }}
       >
-        {/* Surface — full width, medium opacity */}
+        {/* Internal — full width, darkest, drawn behind */}
+        <div
+          className="absolute right-0 bottom-0 left-0 rounded-sm"
+          style={{
+            height: `${internalPct}%`,
+            backgroundColor: color,
+            transition: "height 300ms ease-out",
+          }}
+        />
+        {/* Surface — full width, medium tint, drawn on top so it can hide internal below it */}
         <div
           className="absolute right-0 bottom-0 left-0 rounded-sm"
           style={{
             height: `${surfacePct}%`,
-            backgroundColor: `${color}66`,
-            transition: "height 300ms ease-out",
-          }}
-        />
-        {/* Internal — narrower center column, full opacity */}
-        <div
-          className="absolute bottom-0 left-1/2 -translate-x-1/2 rounded-sm"
-          style={{
-            height: `${internalPct}%`,
-            width: "40%",
-            backgroundColor: color,
+            backgroundColor: surfaceColor,
             transition: "height 300ms ease-out",
           }}
         />
