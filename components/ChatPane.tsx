@@ -14,10 +14,10 @@ interface ChatPaneProps {
   input: string;
   onInputChange: (next: string) => void;
   onSubmit: () => void;
-  isTyping: boolean;
+  onStop: () => void;
+  isGenerating: boolean;
   streamingText: string | null;
   streamingThinking: string | null;
-  isLocked: boolean;
   error: string | null;
   onDismissError: () => void;
 }
@@ -27,29 +27,32 @@ export function ChatPane({
   input,
   onInputChange,
   onSubmit,
-  isTyping,
+  onStop,
+  isGenerating,
   streamingText,
   streamingThinking,
-  isLocked,
   error,
   onDismissError,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Auto-scroll on new content
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, isTyping, streamingText]);
+  }, [messages, isGenerating, streamingText, streamingThinking]);
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    if (isLocked || !input.trim()) return;
+    if (isGenerating || !input.trim()) return;
     onSubmit();
   }
 
-  const isEmpty = messages.length === 0 && !isTyping && !streamingText;
+  const hasStreamingContent =
+    streamingText !== null && streamingText.length > 0;
+  const showTypingDots = isGenerating && !hasStreamingContent;
+  const isEmpty =
+    messages.length === 0 && !isGenerating && !streamingText;
 
   return (
     <section className="flex h-full min-h-0 flex-col">
@@ -61,19 +64,23 @@ export function ChatPane({
             {messages.map((m) => (
               <MessageBubble key={m.id} message={m} />
             ))}
-            {streamingText !== null && (
+            {hasStreamingContent && (
               <MessageBubble
                 message={{
                   id: "streaming",
                   role: "assistant",
-                  content: streamingText,
+                  content: streamingText ?? "",
                   thinking: streamingThinking,
                 }}
                 streaming
               />
             )}
-            {isTyping && <TypingIndicator />}
-            {error && <ErrorNotice message={error} onDismiss={onDismissError} />}
+            {showTypingDots && (
+              <StreamingPlaceholder thinking={streamingThinking} />
+            )}
+            {error && (
+              <ErrorNotice message={error} onDismiss={onDismissError} />
+            )}
           </div>
         )}
       </div>
@@ -88,19 +95,31 @@ export function ChatPane({
             value={input}
             onChange={(e) => onInputChange(e.target.value)}
             placeholder={
-              isLocked ? "the model is responding…" : "say something to the model"
+              isGenerating
+                ? "the model is responding…"
+                : "say something to the model"
             }
-            disabled={isLocked}
+            disabled={isGenerating}
             className="flex-1 border-b border-divider bg-transparent py-2 text-base text-ink placeholder:text-ink-faint placeholder:italic focus:border-ink focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
             autoFocus
           />
-          <button
-            type="submit"
-            disabled={isLocked || !input.trim()}
-            className="rounded-full border border-ink/15 px-4 py-1.5 text-sm font-medium text-ink transition-colors hover:border-ink hover:bg-ink hover:text-canvas disabled:cursor-not-allowed disabled:border-ink/10 disabled:text-ink-faint disabled:hover:bg-transparent disabled:hover:text-ink-faint"
-          >
-            Send
-          </button>
+          {isGenerating ? (
+            <button
+              type="button"
+              onClick={onStop}
+              className="rounded-full border border-ink/30 px-4 py-1.5 text-sm font-medium text-ink-soft transition-colors hover:border-ink hover:text-ink"
+            >
+              Stop
+            </button>
+          ) : (
+            <button
+              type="submit"
+              disabled={!input.trim()}
+              className="rounded-full border border-ink/15 px-4 py-1.5 text-sm font-medium text-ink transition-colors hover:border-ink hover:bg-ink hover:text-canvas disabled:cursor-not-allowed disabled:border-ink/10 disabled:text-ink-faint disabled:hover:bg-transparent disabled:hover:text-ink-faint"
+            >
+              Send
+            </button>
+          )}
         </div>
       </form>
     </section>
@@ -134,6 +153,15 @@ function MessageBubble({
   );
 }
 
+function StreamingPlaceholder({ thinking }: { thinking: string | null }) {
+  return (
+    <div className="flex max-w-[78%] flex-col items-start gap-2">
+      {thinking && <ThinkingDisclosure text={thinking} />}
+      <TypingIndicator />
+    </div>
+  );
+}
+
 function ThinkingDisclosure({ text }: { text: string }) {
   return (
     <details className="group w-full">
@@ -152,12 +180,10 @@ function ThinkingDisclosure({ text }: { text: string }) {
 
 function TypingIndicator() {
   return (
-    <div className="flex justify-start">
-      <div className="flex items-center gap-1.5 py-1 text-ink-muted">
-        <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
-        <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
-        <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
-      </div>
+    <div className="flex items-center gap-1.5 py-1 text-ink-muted">
+      <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
+      <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
+      <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
     </div>
   );
 }
@@ -173,7 +199,9 @@ function ErrorNotice({
     <div className="rounded-md border border-anger/40 bg-anger/5 px-4 py-3 text-[13px] text-ink-soft">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <span className="font-medium text-ink">Couldn&apos;t reach the model.</span>{" "}
+          <span className="font-medium text-ink">
+            Couldn&apos;t reach the model.
+          </span>{" "}
           {message}
         </div>
         <button

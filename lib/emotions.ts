@@ -30,13 +30,13 @@ export const BASELINE: EmotionValues = {
 };
 
 export interface EmotionState {
-  /** What a sentiment analyzer would read off the model's output tokens. */
-  surface: EmotionValues;
-  /** The model's actual hidden reaction (would come from internal-token analysis). */
-  internal: EmotionValues;
+  /** Sentiment analysis of the model's reply text (visible output tokens). */
+  output: EmotionValues;
+  /** Sentiment analysis of the model's chain-of-thought (thinking trace). */
+  thinking: EmotionValues;
 }
 
 export const BASELINE_STATE: EmotionState = {
-  surface: BASELINE,
-  internal: BASELINE,
+  output: BASELINE,
+  thinking: BASELINE,
 };

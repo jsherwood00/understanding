@@ -1,15 +1,19 @@
-import { NextResponse } from "next/server";
 import { type EmotionValues } from "@/lib/emotions";
-import { analyzeSurface, deriveInternal } from "@/lib/sentiment";
+import { analyzeEmotions } from "@/lib/sentiment";
 
 export const runtime = "nodejs";
 
 const FAL_URL = "https://fal.run/fal-ai/any-llm";
 const MODEL = "google/gemini-2.5-flash";
 
-const SYSTEM_PROMPT = `You are an LLM in a chat. Respond naturally to the user's most recent message, in light of the conversation. Be yourself — direct, not customer-service. Keep replies brief, usually 1 to 3 sentences.
+// How many words per chunk emit, and how many trailing words to include in
+// each chunk's sentiment analysis context window.
+const CHUNK_WORDS = 10;
+const ANALYSIS_WINDOW_WORDS = 30;
 
-Output ONLY your reply text. No preamble, no quotation marks wrapping it, no labels like "Reply:", no commentary on what you're doing — just the reply the user will read.`;
+// Pacing: ms per word emit when streaming the output. Thinking is emitted
+// once at start (we already have the full trace).
+const WORD_EMIT_INTERVAL_MS = 25;
 
 interface IncomingMessage {
   role: "user" | "assistant";
@@ -27,39 +31,44 @@ function isValidIncoming(m: unknown): m is IncomingMessage {
 }
 
 function formatPrompt(messages: IncomingMessage[]): string {
+  // Plain transcript, no system instruction, no JSON wrapping.
   const lines: string[] = [];
   for (const m of messages) {
-    const label = m.role === "user" ? "User" : "You";
+    const label = m.role === "user" ? "User" : "Assistant";
     lines.push(`${label}: ${m.content}`);
   }
+  lines.push("Assistant:");
   return lines.join("\n\n");
 }
 
-// Strip any wrapping the model might have added despite the prompt
-// (quotes, "Reply:" prefix, code fences).
-function cleanReply(raw: string): string {
-  let text = raw.trim();
-  const fenceMatch = text.match(/^```(?:\w+)?\s*\n?([\s\S]*?)```\s*$/);
-  if (fenceMatch) text = fenceMatch[1].trim();
-  text = text.replace(/^(?:reply|response|assistant)\s*:\s*/i, "");
-  if (
-    (text.startsWith('"') && text.endsWith('"')) ||
-    (text.startsWith("'") && text.endsWith("'"))
-  ) {
-    text = text.slice(1, -1).trim();
-  }
-  return text;
+function normalizeText(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(/\\r\\n/g, "\n")
+    .replace(/\\n/g, "\n")
+    .replace(/\\t/g, "\t")
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, "\\")
+    .trim();
+}
+
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function jsonResponse(payload: unknown, status: number) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 export async function POST(request: Request) {
   const apiKey = process.env.FAL_API_KEY;
   if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "FAL_API_KEY is not set on the server. Add it to .env.local and restart the dev server.",
-      },
-      { status: 500 },
+    return jsonResponse(
+      { error: "FAL_API_KEY is not set on the server." },
+      500,
     );
   }
 
@@ -67,7 +76,7 @@ export async function POST(request: Request) {
   try {
     body = await request.json();
   } catch {
-    return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
+    return jsonResponse({ error: "Invalid JSON body." }, 400);
   }
 
   const messagesRaw = (body as { messages?: unknown })?.messages;
@@ -76,22 +85,18 @@ export async function POST(request: Request) {
     messagesRaw.length === 0 ||
     !messagesRaw.every(isValidIncoming)
   ) {
-    return NextResponse.json(
+    return jsonResponse(
       {
         error:
           "Body must include a non-empty `messages` array of {role, content}.",
       },
-      { status: 400 },
+      400,
     );
   }
   const messages = messagesRaw as IncomingMessage[];
 
-  let falData: {
-    output?: string;
-    reasoning?: string;
-    error?: string;
-    detail?: unknown;
-  };
+  // Call fal.ai (synchronous — any-llm doesn't expose token streaming).
+  let falData: { output?: string; reasoning?: string; error?: string };
   try {
     const res = await fetch(FAL_URL, {
       method: "POST",
@@ -101,66 +106,133 @@ export async function POST(request: Request) {
       },
       body: JSON.stringify({
         model: MODEL,
-        system_prompt: SYSTEM_PROMPT,
         prompt: formatPrompt(messages),
         reasoning: true,
-        max_tokens: 1024,
+        // No system_prompt — let the model respond naturally.
       }),
     });
     if (!res.ok) {
       const errText = await res.text().catch(() => "");
-      return NextResponse.json(
+      return jsonResponse(
         { error: `fal.ai returned ${res.status}: ${errText.slice(0, 300)}` },
-        { status: 502 },
+        502,
       );
     }
     falData = await res.json();
   } catch (err) {
-    return NextResponse.json(
+    return jsonResponse(
       {
         error: `Failed to reach fal.ai: ${err instanceof Error ? err.message : String(err)}`,
       },
-      { status: 502 },
+      502,
     );
   }
 
   if (falData.error) {
-    return NextResponse.json(
-      { error: `fal.ai error: ${falData.error}` },
-      { status: 502 },
-    );
+    return jsonResponse({ error: `fal.ai error: ${falData.error}` }, 502);
   }
 
-  const raw = falData.output ?? "";
-  const reply = cleanReply(raw);
-  if (!reply) {
-    return NextResponse.json(
-      { error: "Model returned an empty reply." },
-      { status: 502 },
-    );
+  const replyText = (falData.output ?? "").trim();
+  const thinkingText = normalizeText(falData.reasoning);
+
+  if (!replyText) {
+    return jsonResponse({ error: "Model returned an empty reply." }, 502);
   }
 
-  const surface: EmotionValues = await analyzeSurface(reply, apiKey);
-  const internal = deriveInternal(surface);
+  // Stream SSE: thinking event first (full text + emotions), then output
+  // chunks (10 words each + rolling sentiment), then done.
+  const encoder = new TextEncoder();
+  const abortSignal = request.signal;
 
-  return NextResponse.json({
-    text: reply,
-    thinking: normalizeThinking(falData.reasoning),
-    surface,
-    internal,
+  const stream = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const emit = (event: Record<string, unknown>) => {
+        if (abortSignal.aborted) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(event)}\n\n`),
+          );
+        } catch {
+          // controller closed; ignore
+        }
+      };
+
+      // 1. Thinking — emit once with full text + emotions
+      const thinkingEmotions = thinkingText
+        ? analyzeEmotions(thinkingText)
+        : zeros();
+      emit({
+        type: "thinking",
+        text: thinkingText,
+        emotions: thinkingEmotions,
+      });
+
+      // 2. Output — chunked, with rolling 30-word sentiment context
+      const outputWords = replyText.split(/\s+/).filter(Boolean);
+      let emittedSoFar = "";
+      let lastChunkAtIdx = 0;
+
+      for (let i = 0; i < outputWords.length; i++) {
+        if (abortSignal.aborted) {
+          controller.close();
+          return;
+        }
+
+        const word = outputWords[i];
+        emittedSoFar = emittedSoFar
+          ? `${emittedSoFar} ${word}`
+          : word;
+        emit({ type: "output_word", text: word, index: i });
+
+        const wordsSinceLastChunk = i + 1 - lastChunkAtIdx;
+        const isLast = i === outputWords.length - 1;
+        if (wordsSinceLastChunk >= CHUNK_WORDS || isLast) {
+          const windowStart = Math.max(0, i + 1 - ANALYSIS_WINDOW_WORDS);
+          const window = outputWords.slice(windowStart, i + 1).join(" ");
+          const emotions = analyzeEmotions(window);
+          emit({
+            type: "output_emotions",
+            emotions,
+            words: i + 1,
+          });
+          lastChunkAtIdx = i + 1;
+        }
+
+        await sleep(WORD_EMIT_INTERVAL_MS);
+      }
+
+      // 3. Done
+      const finalOutputEmotions = analyzeEmotions(replyText);
+      emit({
+        type: "done",
+        outputEmotions: finalOutputEmotions,
+        thinkingEmotions,
+        fullText: replyText,
+        fullThinking: thinkingText,
+      });
+      controller.close();
+    },
+    cancel() {
+      // Client aborted; nothing to clean up beyond the stream itself.
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+    },
   });
 }
 
-// fal.ai sometimes returns reasoning with literal "\n" characters (escape
-// sequences that weren't decoded). Convert them to real whitespace.
-function normalizeThinking(raw: unknown): string | null {
-  if (typeof raw !== "string" || raw.length === 0) return null;
-  const decoded = raw
-    .replace(/\\r\\n/g, "\n")
-    .replace(/\\n/g, "\n")
-    .replace(/\\t/g, "\t")
-    .replace(/\\"/g, '"')
-    .replace(/\\\\/g, "\\")
-    .trim();
-  return decoded.length > 0 ? decoded : null;
+function zeros(): EmotionValues {
+  return {
+    Joy: 0,
+    Sadness: 0,
+    Anger: 0,
+    Fear: 0,
+    Disgust: 0,
+    Surprise: 0,
+  };
 }

@@ -21,8 +21,8 @@ export function EmotionPanel({ state }: EmotionPanelProps) {
           <Bar
             key={emotion}
             emotion={emotion}
-            internal={state.internal[emotion]}
-            surface={state.surface[emotion]}
+            thinking={state.thinking[emotion]}
+            output={state.output[emotion]}
           />
         ))}
       </div>
@@ -32,45 +32,47 @@ export function EmotionPanel({ state }: EmotionPanelProps) {
 
 function Bar({
   emotion,
-  internal,
-  surface,
+  thinking,
+  output,
 }: {
   emotion: Emotion;
-  internal: number;
-  surface: number;
+  thinking: number;
+  output: number;
 }) {
   const color = EMOTION_COLORS[emotion];
-  const internalPct = clamp(internal);
-  const surfacePct = clamp(surface);
-  // Two pastel shades mixed with canvas — gentle, not aggressive.
-  const surfaceColor = `color-mix(in srgb, ${color} 12%, #faf9f6)`;
-  const internalColor = `color-mix(in srgb, ${color} 45%, #faf9f6)`;
+  const thinkingPct = clamp(thinking);
+  const outputPct = clamp(output);
+  // Bar (thinking): mid-saturation tint, gentle.
+  // Line (output): darker contrast, visible against bar fill OR canvas.
+  const barColor = `color-mix(in srgb, ${color} 38%, #faf9f6)`;
+  const lineColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
       <span className="tabular text-xs leading-tight">
         <span className="font-medium text-ink-soft">
-          {Math.round(internal)}
+          {Math.round(thinking)}
         </span>
         <span className="mx-0.5 text-ink-faint">·</span>
-        <span className="text-ink-faint">{Math.round(surface)}</span>
+        <span className="text-ink-faint">{Math.round(output)}</span>
       </span>
       <div className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm">
-        {/* Internal — drawn first (behind), darker shade */}
+        {/* Thinking — bar fill from 0 to thinking%, lighter shade */}
         <div
           className="absolute right-0 bottom-0 left-0 rounded-sm"
           style={{
-            height: `${internalPct}%`,
-            backgroundColor: internalColor,
+            height: `${thinkingPct}%`,
+            backgroundColor: barColor,
             transition: "height 300ms ease-out",
           }}
         />
-        {/* Surface — drawn on top, slightly lighter shade, opaque so it hides internal below it */}
+        {/* Output — 2px tick line at output% height, darker shade */}
         <div
-          className="absolute right-0 bottom-0 left-0 rounded-sm"
+          className="absolute right-0 left-0"
           style={{
-            height: `${surfacePct}%`,
-            backgroundColor: surfaceColor,
-            transition: "height 300ms ease-out",
+            bottom: `calc(${outputPct}% - 1px)`,
+            height: "2px",
+            backgroundColor: lineColor,
+            transition: "bottom 300ms ease-out",
           }}
         />
       </div>
@@ -82,7 +84,7 @@ function Bar({
 function Legend() {
   return (
     <div className="text-[10px] tracking-[0.12em] text-ink-faint uppercase">
-      darker = internal · lighter = surface
+      bar = thinking · line = output
     </div>
   );
 }

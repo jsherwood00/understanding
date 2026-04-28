@@ -1,73 +1,37 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useRef, useState } from "react";
 import { BASELINE_STATE, type EmotionState } from "@/lib/emotions";
 import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
 
-const STREAM_INTERVAL_MS = 20;
-const SETTLE_DELAY_MS = 220;
+interface SSEEvent {
+  type: "thinking" | "output_word" | "output_emotions" | "done";
+  text?: string;
+  emotions?: EmotionState["thinking"];
+  outputEmotions?: EmotionState["output"];
+  thinkingEmotions?: EmotionState["thinking"];
+  fullText?: string;
+  fullThinking?: string;
+  index?: number;
+  words?: number;
+}
 
 export function Workspace() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
-  const [streamingFull, setStreamingFull] = useState<string | null>(null);
-  const [streamedChars, setStreamedChars] = useState(0);
-  const [pendingState, setPendingState] = useState<EmotionState | null>(null);
-  const [pendingThinking, setPendingThinking] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [streamingContent, setStreamingContent] = useState<string | null>(null);
   const [streamingThinking, setStreamingThinking] = useState<string | null>(
     null,
   );
   const [bars, setBars] = useState<EmotionState>(BASELINE_STATE);
   const [error, setError] = useState<string | null>(null);
-
-  const isStreaming = streamingFull !== null;
-  const isLocked = isTyping || isStreaming;
-  const streamingText = streamingFull
-    ? streamingFull.slice(0, streamedChars)
-    : null;
-
-  // Character streamer: emit one char per STREAM_INTERVAL_MS while a response is being delivered.
-  useEffect(() => {
-    if (streamingFull === null) return;
-    const id = setInterval(() => {
-      setStreamedChars((c) => (c < streamingFull.length ? c + 1 : c));
-    }, STREAM_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [streamingFull]);
-
-  // Completion: when full text has been emitted, finalize the message and apply the new state.
-  useEffect(() => {
-    if (streamingFull === null) return;
-    if (streamedChars < streamingFull.length) return;
-    const id = setTimeout(() => {
-      const completed = streamingFull;
-      const thinking = pendingThinking;
-      setMessages((m) => [
-        ...m,
-        {
-          id: crypto.randomUUID(),
-          role: "assistant",
-          content: completed,
-          thinking,
-        },
-      ]);
-      setStreamingFull(null);
-      setStreamingThinking(null);
-      setStreamedChars(0);
-      setPendingThinking(null);
-      if (pendingState) {
-        setBars(pendingState);
-        setPendingState(null);
-      }
-    }, SETTLE_DELAY_MS);
-    return () => clearTimeout(id);
-  }, [streamingFull, streamedChars, pendingState, pendingThinking]);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   async function handleSubmit() {
     const text = input.trim();
-    if (!text || isLocked) return;
+    if (!text || isGenerating) return;
 
     const userMessage: ChatMessage = {
       id: crypto.randomUUID(),
@@ -77,8 +41,18 @@ export function Workspace() {
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
     setInput("");
-    setIsTyping(true);
+    setIsGenerating(true);
+    setStreamingContent("");
+    setStreamingThinking(null);
+    setBars(BASELINE_STATE);
     setError(null);
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    let accumulatedOutput = "";
+    let finalThinking: string | null = null;
+    let completed = false;
 
     try {
       const res = await fetch("/api/evaluate", {
@@ -90,39 +64,117 @@ export function Workspace() {
             content: m.content,
           })),
         }),
+        signal: controller.signal,
       });
 
-      const payload = await res.json().catch(() => null);
-      if (
-        !res.ok ||
-        !payload ||
-        typeof payload.text !== "string" ||
-        !payload.surface ||
-        !payload.internal
-      ) {
+      if (!res.ok) {
+        const errPayload = await res.json().catch(() => null);
         const message =
-          (payload && typeof payload.error === "string" && payload.error) ||
-          `Request failed (${res.status}).`;
+          (errPayload && typeof errPayload.error === "string"
+            ? errPayload.error
+            : null) ?? `Request failed (${res.status}).`;
         throw new Error(message);
       }
+      if (!res.body) throw new Error("Server returned no body.");
 
-      const thinking =
-        typeof payload.thinking === "string" && payload.thinking.length > 0
-          ? payload.thinking
-          : null;
-      setIsTyping(false);
-      setStreamedChars(0);
-      setPendingState({
-        surface: payload.surface,
-        internal: payload.internal,
-      });
-      setPendingThinking(thinking);
-      setStreamingThinking(thinking);
-      setStreamingFull(payload.text);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        const parts = buffer.split("\n\n");
+        buffer = parts.pop() ?? "";
+
+        for (const part of parts) {
+          if (!part.startsWith("data: ")) continue;
+          let data: SSEEvent;
+          try {
+            data = JSON.parse(part.slice(6)) as SSEEvent;
+          } catch {
+            continue;
+          }
+
+          switch (data.type) {
+            case "thinking": {
+              const traceText = data.text ?? "";
+              finalThinking = traceText.length > 0 ? traceText : null;
+              setStreamingThinking(finalThinking);
+              if (data.emotions) {
+                setBars((prev) => ({ ...prev, thinking: data.emotions! }));
+              }
+              break;
+            }
+            case "output_word": {
+              const word = data.text ?? "";
+              accumulatedOutput = accumulatedOutput
+                ? `${accumulatedOutput} ${word}`
+                : word;
+              setStreamingContent(accumulatedOutput);
+              break;
+            }
+            case "output_emotions": {
+              if (data.emotions) {
+                setBars((prev) => ({ ...prev, output: data.emotions! }));
+              }
+              break;
+            }
+            case "done": {
+              completed = true;
+              const fullText = data.fullText ?? accumulatedOutput;
+              const fullThinking = data.fullThinking ?? finalThinking;
+              setMessages((m) => [
+                ...m,
+                {
+                  id: crypto.randomUUID(),
+                  role: "assistant",
+                  content: fullText,
+                  thinking: fullThinking || null,
+                },
+              ]);
+              setBars({
+                thinking: data.thinkingEmotions ?? BASELINE_STATE.thinking,
+                output: data.outputEmotions ?? BASELINE_STATE.output,
+              });
+              setStreamingContent(null);
+              setStreamingThinking(null);
+              break;
+            }
+          }
+        }
+      }
     } catch (e) {
-      setIsTyping(false);
-      setError(e instanceof Error ? e.message : "Something went wrong.");
+      const isAbort =
+        e instanceof DOMException && e.name === "AbortError";
+      if (!isAbort) {
+        setError(e instanceof Error ? e.message : "Something went wrong.");
+      }
+    } finally {
+      // If we got partial output but never saw "done", preserve it as a
+      // truncated assistant message so the user sees what arrived.
+      if (!completed && accumulatedOutput.trim().length > 0) {
+        setMessages((m) => [
+          ...m,
+          {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: `${accumulatedOutput.trim()} […]`,
+            thinking: finalThinking,
+          },
+        ]);
+      }
+      setStreamingContent(null);
+      setStreamingThinking(null);
+      setIsGenerating(false);
+      abortControllerRef.current = null;
     }
+  }
+
+  function handleStop() {
+    abortControllerRef.current?.abort();
   }
 
   return (
@@ -136,10 +188,10 @@ export function Workspace() {
           input={input}
           onInputChange={setInput}
           onSubmit={handleSubmit}
-          isTyping={isTyping}
-          streamingText={streamingText}
+          onStop={handleStop}
+          isGenerating={isGenerating}
+          streamingText={streamingContent}
           streamingThinking={streamingThinking}
-          isLocked={isLocked}
           error={error}
           onDismissError={() => setError(null)}
         />
