@@ -16,6 +16,8 @@ interface ChatPaneProps {
   isTyping: boolean;
   streamingText: string | null;
   isLocked: boolean;
+  error: string | null;
+  onDismissError: () => void;
 }
 
 export function ChatPane({
@@ -26,6 +28,8 @@ export function ChatPane({
   isTyping,
   streamingText,
   isLocked,
+  error,
+  onDismissError,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +69,7 @@ export function ChatPane({
               />
             )}
             {isTyping && <TypingIndicator />}
+            {error && <ErrorNotice message={error} onDismiss={onDismissError} />}
           </div>
         )}
       </div>
@@ -129,6 +134,33 @@ function TypingIndicator() {
         <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
         <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
         <span className="typing-dot inline-block h-1.5 w-1.5 rounded-full bg-current" />
+      </div>
+    </div>
+  );
+}
+
+function ErrorNotice({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-anger/40 bg-anger/5 px-4 py-3 text-[13px] text-ink-soft">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <span className="font-medium text-ink">Couldn&apos;t reach the model.</span>{" "}
+          {message}
+        </div>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="text-ink-muted hover:text-ink"
+          aria-label="Dismiss"
+        >
+          ×
+        </button>
       </div>
     </div>
   );

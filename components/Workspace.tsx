@@ -2,11 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { BASELINE, type EmotionValues } from "@/lib/emotions";
-import { RESPONSES } from "@/lib/responses";
 import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
 
-const TYPING_DELAY_MS = 800;
 const STREAM_INTERVAL_MS = 20;
 const SETTLE_DELAY_MS = 220;
 
@@ -16,11 +14,11 @@ export function Workspace() {
   const [isTyping, setIsTyping] = useState(false);
   const [streamingFull, setStreamingFull] = useState<string | null>(null);
   const [streamedChars, setStreamedChars] = useState(0);
-  const [responseIndex, setResponseIndex] = useState(0);
   const [pendingProfile, setPendingProfile] = useState<EmotionValues | null>(
     null,
   );
   const [bars, setBars] = useState<EmotionValues>(BASELINE);
+  const [error, setError] = useState<string | null>(null);
 
   const isStreaming = streamingFull !== null;
   const isLocked = isTyping || isStreaming;
@@ -57,7 +55,7 @@ export function Workspace() {
     return () => clearTimeout(id);
   }, [streamingFull, streamedChars, pendingProfile]);
 
-  function handleSubmit() {
+  async function handleSubmit() {
     const text = input.trim();
     if (!text || isLocked) return;
 
@@ -66,19 +64,40 @@ export function Workspace() {
       role: "user",
       content: text,
     };
-    setMessages((m) => [...m, userMessage]);
+    const nextMessages = [...messages, userMessage];
+    setMessages(nextMessages);
     setInput("");
     setIsTyping(true);
+    setError(null);
 
-    const next = RESPONSES[responseIndex % RESPONSES.length];
-    setResponseIndex((i) => i + 1);
+    try {
+      const res = await fetch("/api/evaluate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          messages: nextMessages.map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+        }),
+      });
 
-    setTimeout(() => {
+      const payload = await res.json().catch(() => null);
+      if (!res.ok || !payload || typeof payload.text !== "string") {
+        const message =
+          (payload && typeof payload.error === "string" && payload.error) ||
+          `Request failed (${res.status}).`;
+        throw new Error(message);
+      }
+
       setIsTyping(false);
       setStreamedChars(0);
-      setPendingProfile(next.profile);
-      setStreamingFull(next.text);
-    }, TYPING_DELAY_MS);
+      setPendingProfile(payload.profile as EmotionValues);
+      setStreamingFull(payload.text);
+    } catch (e) {
+      setIsTyping(false);
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+    }
   }
 
   return (
@@ -95,6 +114,8 @@ export function Workspace() {
           isTyping={isTyping}
           streamingText={streamingText}
           isLocked={isLocked}
+          error={error}
+          onDismissError={() => setError(null)}
         />
       </div>
     </>

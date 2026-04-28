@@ -16,8 +16,8 @@ const fraunces = Fraunces({
 });
 
 export const metadata: Metadata = {
-  title: "Understanding",
-  description: "What the model feels beneath what it says.",
+  title: "understanding",
+  description: "An LLM emotion visualization.",
 };
 
 export default function RootLayout({
