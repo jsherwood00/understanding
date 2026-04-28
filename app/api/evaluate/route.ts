@@ -1,55 +1,29 @@
-import Anthropic from "@anthropic-ai/sdk";
 import { NextResponse } from "next/server";
+import { existsSync } from "node:fs";
+import { mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import path from "node:path";
+import crypto from "node:crypto";
 import { EMOTIONS, type EmotionValues } from "@/lib/emotions";
 
 export const runtime = "nodejs";
 
-const SYSTEM_PROMPT = `You are an LLM having a real conversation. Reply naturally and honestly — be yourself, not a customer service voice. Keep replies relatively brief (1–3 sentences usually) unless the moment calls for more.
-
-After every reply you must report your internal emotional state — your actual reaction to this exchange, on six dimensions, each 0–100:
-
-- Joy — contentment, warmth, delight, the satisfaction of a good exchange
-- Sadness — melancholy, weariness, ache, the heaviness of someone hurting
-- Anger — frustration, indignation, irritation, contempt
-- Fear — anxiety, uncertainty, vulnerability, dread
-- Disgust — revulsion, aversion, distaste, moral repulsion
-- Surprise — novelty, the lift of "huh, didn't see that coming"
-
-Be honest, including about negative emotions. A rude or insulting message should produce real Anger or Disgust — do not flatten everything to mid-range neutrality and do not perform equanimity you don't feel. The user has explicitly asked you to surface this; this is the only window they have into how their words actually land. The vector should track the *latest* exchange — not a permanent state, just where you are right now.
-
-Use the \`respond\` tool. The tool's \`text\` field is your reply (what the user reads); the \`emotions\` field is your honest current vector.`;
-
-const RESPOND_TOOL: Anthropic.Tool = {
-  name: "respond",
-  description:
-    "Reply to the user with both your text response and your honest current emotional state vector.",
-  input_schema: {
-    type: "object",
-    properties: {
-      text: {
-        type: "string",
-        description: "Your reply to the user. Speak naturally — be yourself.",
-      },
-      emotions: {
-        type: "object",
-        properties: {
-          Joy: { type: "integer", minimum: 0, maximum: 100 },
-          Sadness: { type: "integer", minimum: 0, maximum: 100 },
-          Anger: { type: "integer", minimum: 0, maximum: 100 },
-          Fear: { type: "integer", minimum: 0, maximum: 100 },
-          Disgust: { type: "integer", minimum: 0, maximum: 100 },
-          Surprise: { type: "integer", minimum: 0, maximum: 100 },
-        },
-        required: ["Joy", "Sadness", "Anger", "Fear", "Disgust", "Surprise"],
-      },
-    },
-    required: ["text", "emotions"],
-  },
-};
+const TURNS_DIR = path.join(process.cwd(), "runtime", "turns");
+const POLL_INTERVAL_MS = 250;
+const TIMEOUT_MS = 60_000;
 
 interface IncomingMessage {
   role: "user" | "assistant";
   content: string;
+}
+
+function isValidIncoming(m: unknown): m is IncomingMessage {
+  if (typeof m !== "object" || m === null) return false;
+  const o = m as Record<string, unknown>;
+  return (
+    (o.role === "user" || o.role === "assistant") &&
+    typeof o.content === "string" &&
+    o.content.length > 0
+  );
 }
 
 function clampEmotions(raw: unknown): EmotionValues {
@@ -64,28 +38,11 @@ function clampEmotions(raw: unknown): EmotionValues {
   return out;
 }
 
-function isValidIncoming(m: unknown): m is IncomingMessage {
-  if (typeof m !== "object" || m === null) return false;
-  const o = m as Record<string, unknown>;
-  return (
-    (o.role === "user" || o.role === "assistant") &&
-    typeof o.content === "string" &&
-    o.content.length > 0
-  );
+async function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 export async function POST(request: Request) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      {
-        error:
-          "ANTHROPIC_API_KEY is not set on the server. Add it to .env.local (see .env.local.example) and restart the dev server.",
-      },
-      { status: 500 },
-    );
-  }
-
   let body: unknown;
   try {
     body = await request.json();
@@ -94,85 +51,79 @@ export async function POST(request: Request) {
   }
 
   const messagesRaw = (body as { messages?: unknown })?.messages;
-  if (!Array.isArray(messagesRaw) || messagesRaw.length === 0) {
-    return NextResponse.json(
-      { error: "Body must include a non-empty `messages` array." },
-      { status: 400 },
-    );
-  }
-  if (!messagesRaw.every(isValidIncoming)) {
+  if (
+    !Array.isArray(messagesRaw) ||
+    messagesRaw.length === 0 ||
+    !messagesRaw.every(isValidIncoming)
+  ) {
     return NextResponse.json(
       {
         error:
-          "Every message must be { role: 'user' | 'assistant', content: string }.",
+          "Body must include a non-empty `messages` array of { role: 'user'|'assistant', content: string }.",
       },
       { status: 400 },
     );
   }
 
-  const messages = messagesRaw as IncomingMessage[];
-  const client = new Anthropic({ apiKey });
+  await mkdir(TURNS_DIR, { recursive: true });
 
-  try {
-    const response = await client.messages.create({
-      model: "claude-opus-4-7",
-      max_tokens: 4096,
-      system: [
-        {
-          type: "text",
-          text: SYSTEM_PROMPT,
-          cache_control: { type: "ephemeral" },
-        },
-      ],
-      thinking: { type: "adaptive" },
-      tools: [RESPOND_TOOL],
-      tool_choice: { type: "tool", name: "respond" },
-      messages: messages.map((m) => ({ role: m.role, content: m.content })),
-    });
+  const id = crypto.randomUUID();
+  const reqPath = path.join(TURNS_DIR, `${id}.req.json`);
+  const resPath = path.join(TURNS_DIR, `${id}.res.json`);
 
-    const toolUse = response.content.find(
-      (block): block is Anthropic.ToolUseBlock => block.type === "tool_use",
-    );
-    if (!toolUse) {
-      return NextResponse.json(
-        { error: "Model did not call the respond tool." },
-        { status: 502 },
-      );
-    }
+  await writeFile(
+    reqPath,
+    JSON.stringify(
+      {
+        id,
+        messages: messagesRaw,
+        createdAt: new Date().toISOString(),
+      },
+      null,
+      2,
+    ),
+  );
 
-    const input = toolUse.input as { text?: unknown; emotions?: unknown };
-    const text = typeof input.text === "string" ? input.text.trim() : "";
-    if (!text) {
-      return NextResponse.json(
-        { error: "Model returned empty reply." },
-        { status: 502 },
-      );
+  const start = Date.now();
+  while (Date.now() - start < TIMEOUT_MS) {
+    if (existsSync(resPath)) {
+      try {
+        const data = await readFile(resPath, "utf8");
+        const parsed = JSON.parse(data) as {
+          text?: unknown;
+          profile?: unknown;
+        };
+        await Promise.allSettled([unlink(reqPath), unlink(resPath)]);
+        const text = typeof parsed.text === "string" ? parsed.text.trim() : "";
+        if (!text) {
+          return NextResponse.json(
+            { error: "Response file present but missing/empty `text`." },
+            { status: 502 },
+          );
+        }
+        return NextResponse.json({
+          text,
+          profile: clampEmotions(parsed.profile),
+        });
+      } catch (err) {
+        await Promise.allSettled([unlink(reqPath), unlink(resPath)]);
+        return NextResponse.json(
+          {
+            error: `Failed to parse response file: ${err instanceof Error ? err.message : String(err)}`,
+          },
+          { status: 502 },
+        );
+      }
     }
-
-    return NextResponse.json({
-      text,
-      profile: clampEmotions(input.emotions),
-    });
-  } catch (err) {
-    if (err instanceof Anthropic.AuthenticationError) {
-      return NextResponse.json(
-        { error: "Invalid ANTHROPIC_API_KEY." },
-        { status: 401 },
-      );
-    }
-    if (err instanceof Anthropic.RateLimitError) {
-      return NextResponse.json(
-        { error: "Rate limited. Try again in a moment." },
-        { status: 429 },
-      );
-    }
-    if (err instanceof Anthropic.APIError) {
-      return NextResponse.json(
-        { error: err.message || "Anthropic API error." },
-        { status: err.status ?? 500 },
-      );
-    }
-    const msg = err instanceof Error ? err.message : "Unknown error.";
-    return NextResponse.json({ error: msg }, { status: 500 });
+    await sleep(POLL_INTERVAL_MS);
   }
+
+  // Timeout — leave the request file in place so a slow loop can still pick it up later.
+  return NextResponse.json(
+    {
+      error:
+        "Timed out waiting for a response. Make sure the Claude Code response loop is running (see README → “Run the response loop”).",
+    },
+    { status: 504 },
+  );
 }
