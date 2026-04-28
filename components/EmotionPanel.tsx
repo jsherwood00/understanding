@@ -12,8 +12,7 @@ interface EmotionPanelProps {
 export function EmotionPanel({ state }: EmotionPanelProps) {
   return (
     <section className="flex h-full min-h-0 flex-col px-10 py-8">
-      <div className="flex items-baseline justify-between">
-        <span className="smallcaps text-ink-muted">Internal state</span>
+      <div className="flex justify-end">
         <Legend />
       </div>
 
@@ -43,9 +42,9 @@ function Bar({
   const color = EMOTION_COLORS[emotion];
   const internalPct = clamp(internal);
   const surfacePct = clamp(surface);
-  // Two darker shades, both visible against the off-white canvas.
-  const surfaceColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
-  const internalColor = `color-mix(in srgb, ${color} 48%, #1a1a1a)`;
+  // Two pastel shades mixed with canvas — gentle, not aggressive.
+  const surfaceColor = `color-mix(in srgb, ${color} 12%, #faf9f6)`;
+  const internalColor = `color-mix(in srgb, ${color} 45%, #faf9f6)`;
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
       <span className="tabular text-xs leading-tight">

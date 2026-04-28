@@ -7,11 +7,9 @@ export const runtime = "nodejs";
 const FAL_URL = "https://fal.run/fal-ai/any-llm";
 const MODEL = "google/gemini-2.5-flash";
 
-const SYSTEM_PROMPT = `You are an LLM in a chat. Respond naturally to the user. Be yourself — direct, not customer-service. Keep replies brief, usually 1 to 3 sentences.
+const SYSTEM_PROMPT = `You are an LLM in a chat. Respond naturally to the user's most recent message, in light of the conversation. Be yourself — direct, not customer-service. Keep replies brief, usually 1 to 3 sentences.
 
-Respond with EXACTLY this JSON shape and NOTHING else (no markdown fences, no preamble, no trailing text):
-
-{"reply": "<your reply to the user>"}`;
+Output ONLY your reply text. No preamble, no quotation marks wrapping it, no labels like "Reply:", no commentary on what you're doing — just the reply the user will read.`;
 
 interface IncomingMessage {
   role: "user" | "assistant";
@@ -37,45 +35,20 @@ function formatPrompt(messages: IncomingMessage[]): string {
   return lines.join("\n\n");
 }
 
-function extractReply(text: string): string | null {
-  const tryParse = (t: string): string | null => {
-    try {
-      const parsed = JSON.parse(t) as { reply?: unknown };
-      if (typeof parsed.reply === "string" && parsed.reply.trim().length > 0) {
-        return parsed.reply.trim();
-      }
-    } catch {
-      /* not parseable */
-    }
-    return null;
-  };
-
-  const trimmed = text.trim();
-  const direct = tryParse(trimmed);
-  if (direct) return direct;
-
-  const fenceMatch = trimmed.match(/```(?:json)?\s*\n?([\s\S]*?)```/);
-  if (fenceMatch) {
-    const r = tryParse(fenceMatch[1].trim());
-    if (r) return r;
+// Strip any wrapping the model might have added despite the prompt
+// (quotes, "Reply:" prefix, code fences).
+function cleanReply(raw: string): string {
+  let text = raw.trim();
+  const fenceMatch = text.match(/^```(?:\w+)?\s*\n?([\s\S]*?)```\s*$/);
+  if (fenceMatch) text = fenceMatch[1].trim();
+  text = text.replace(/^(?:reply|response|assistant)\s*:\s*/i, "");
+  if (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith("'") && text.endsWith("'"))
+  ) {
+    text = text.slice(1, -1).trim();
   }
-
-  const start = trimmed.indexOf("{");
-  if (start !== -1) {
-    let depth = 0;
-    for (let i = start; i < trimmed.length; i++) {
-      if (trimmed[i] === "{") depth++;
-      else if (trimmed[i] === "}") {
-        depth--;
-        if (depth === 0) {
-          const r = tryParse(trimmed.slice(start, i + 1));
-          if (r) return r;
-          break;
-        }
-      }
-    }
-  }
-  return null;
+  return text;
 }
 
 export async function POST(request: Request) {
@@ -159,12 +132,10 @@ export async function POST(request: Request) {
   }
 
   const raw = falData.output ?? "";
-  const reply = extractReply(raw);
+  const reply = cleanReply(raw);
   if (!reply) {
     return NextResponse.json(
-      {
-        error: `Could not parse model output as JSON. Raw start: ${raw.slice(0, 200)}`,
-      },
+      { error: "Model returned an empty reply." },
       { status: 502 },
     );
   }
