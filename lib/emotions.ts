@@ -41,10 +41,20 @@ export const BASELINE_STATE: EmotionState = {
   thinking: BASELINE,
 };
 
+export interface OutputSnapshot {
+  atWord: number;
+  emotions: EmotionValues;
+}
+
 export interface Turn {
   id: string;
   userMessage: string;
   assistantReply: string;
   thinking: string | null;
+  /** Emotion vector from the chain-of-thought; constant across the turn. */
+  thinkingEmotions: EmotionValues;
+  /** Per-chunk snapshots emitted during streaming (every 10 output words). */
+  outputSnapshots: OutputSnapshot[];
+  /** Convenience: the final state at the end of the turn. */
   state: EmotionState;
 }

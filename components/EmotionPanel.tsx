@@ -10,7 +10,9 @@ interface EmotionPanelProps {
   state: EmotionState;
   turns: Turn[];
   viewingIndex: number | null;
+  snapshotIndex: number;
   onNavigate: (direction: -1 | 1) => void;
+  onScrub: (snapIdx: number) => void;
   onReplayTurn: () => void;
   onReplayAll: () => void;
   onStopReplay: () => void;
@@ -18,17 +20,7 @@ interface EmotionPanelProps {
   isGenerating: boolean;
 }
 
-export function EmotionPanel({
-  state,
-  turns,
-  viewingIndex,
-  onNavigate,
-  onReplayTurn,
-  onReplayAll,
-  onStopReplay,
-  isReplaying,
-  isGenerating,
-}: EmotionPanelProps) {
+export function EmotionPanel(props: EmotionPanelProps) {
   return (
     <section className="flex h-full min-h-0 flex-col px-10 py-8">
       <div className="flex justify-end">
@@ -40,22 +32,13 @@ export function EmotionPanel({
           <Bar
             key={emotion}
             emotion={emotion}
-            thinking={state.thinking[emotion]}
-            output={state.output[emotion]}
+            thinking={props.state.thinking[emotion]}
+            output={props.state.output[emotion]}
           />
         ))}
       </div>
 
-      <TurnNavigator
-        turns={turns}
-        viewingIndex={viewingIndex}
-        onNavigate={onNavigate}
-        onReplayTurn={onReplayTurn}
-        onReplayAll={onReplayAll}
-        onStopReplay={onStopReplay}
-        isReplaying={isReplaying}
-        isGenerating={isGenerating}
-      />
+      <TurnNavigator {...props} />
     </section>
   );
 }
@@ -115,32 +98,58 @@ function Legend() {
   );
 }
 
-function TurnNavigator({
-  turns,
-  viewingIndex,
-  onNavigate,
-  onReplayTurn,
-  onReplayAll,
-  onStopReplay,
-  isReplaying,
-  isGenerating,
-}: Omit<EmotionPanelProps, "state">) {
+function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
+  const turns = props.turns ?? [];
+  const {
+    viewingIndex,
+    snapshotIndex,
+    onNavigate,
+    onScrub,
+    onReplayTurn,
+    onReplayAll,
+    onStopReplay,
+    isReplaying,
+    isGenerating,
+  } = props;
+
   if (turns.length === 0) return <div className="mt-8 h-12" />;
 
   const turn = viewingIndex !== null ? turns[viewingIndex] : null;
   const preview = turn ? previewWords(turn.userMessage, 10) : "";
+  const snapCount = turn?.outputSnapshots.length ?? 0;
+  const sliderMax = Math.max(0, snapCount - 1);
   const isAtStart = viewingIndex === null || viewingIndex === 0;
   const isAtEnd =
     viewingIndex === null || viewingIndex === turns.length - 1;
   const navDisabled = isReplaying || isGenerating;
+  const scrubDisabled = navDisabled || snapCount <= 1;
 
   return (
     <div className="mt-8 border-t border-divider pt-4">
-      <div className="mb-2 truncate text-[12px] text-ink-muted italic">
+      <div className="mb-3 truncate text-[12px] text-ink-muted italic">
         {preview ? `"${preview}"` : "—"}
       </div>
-      <div className="flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2">
+
+      <div className="flex items-center gap-3 text-xs">
+        {/* Snapshot scrubber on the left, takes the bulk of the row */}
+        <div className="flex flex-1 items-center gap-2">
+          <input
+            type="range"
+            min={0}
+            max={sliderMax}
+            value={Math.min(snapshotIndex, sliderMax)}
+            onChange={(e) => onScrub(Number(e.target.value))}
+            disabled={scrubDisabled}
+            className="h-1 flex-1 cursor-pointer accent-ink-soft disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label="Scrub through chunks of this turn"
+          />
+          <span className="tabular text-[10px] text-ink-faint">
+            {Math.min(snapshotIndex, sliderMax) + 1}/{Math.max(1, snapCount)}
+          </span>
+        </div>
+
+        {/* Turn navigator on the right */}
+        <div className="flex items-center gap-1">
           <button
             type="button"
             onClick={() => onNavigate(-1)}
@@ -151,7 +160,7 @@ function TurnNavigator({
             ‹
           </button>
           <span className="tabular text-ink-muted">
-            turn {viewingIndex !== null ? viewingIndex + 1 : 0} / {turns.length}
+            {viewingIndex !== null ? viewingIndex + 1 : 0}/{turns.length}
           </span>
           <button
             type="button"
@@ -163,36 +172,38 @@ function TurnNavigator({
             ›
           </button>
         </div>
-        <div className="flex items-center gap-3 text-[11px] tracking-wide text-ink-muted uppercase">
-          {isReplaying ? (
+      </div>
+
+      {/* Replay actions */}
+      <div className="mt-2 flex justify-end gap-3 text-[11px] tracking-wide text-ink-muted uppercase">
+        {isReplaying ? (
+          <button
+            type="button"
+            onClick={onStopReplay}
+            className="rounded border border-ink/30 px-2 py-0.5 text-ink-soft hover:border-ink hover:text-ink"
+          >
+            stop
+          </button>
+        ) : (
+          <>
             <button
               type="button"
-              onClick={onStopReplay}
-              className="rounded border border-ink/30 px-2 py-0.5 text-ink-soft hover:border-ink hover:text-ink"
+              onClick={onReplayTurn}
+              disabled={isGenerating || viewingIndex === null}
+              className="hover:text-ink-soft disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
             >
-              stop
+              replay
             </button>
-          ) : (
-            <>
-              <button
-                type="button"
-                onClick={onReplayTurn}
-                disabled={isGenerating || viewingIndex === null}
-                className="hover:text-ink-soft disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
-              >
-                replay
-              </button>
-              <button
-                type="button"
-                onClick={onReplayAll}
-                disabled={isGenerating || turns.length === 0}
-                className="hover:text-ink-soft disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
-              >
-                replay all
-              </button>
-            </>
-          )}
-        </div>
+            <button
+              type="button"
+              onClick={onReplayAll}
+              disabled={isGenerating || turns.length === 0}
+              className="hover:text-ink-soft disabled:cursor-not-allowed disabled:text-ink-faint disabled:hover:text-ink-faint"
+            >
+              replay all
+            </button>
+          </>
+        )}
       </div>
     </div>
   );
