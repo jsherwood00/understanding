@@ -134,7 +134,7 @@ function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
 
   const turn = viewingIndex !== null ? turns[viewingIndex] : null;
   const preview = turn ? previewWords(turn.userMessage, 10) : "";
-  const snapCount = turn?.outputSnapshots.length ?? 0;
+  const snapCount = turn?.snapshots.length ?? 0;
   const sliderMax = Math.max(0, snapCount - 1);
   const isAtStart = viewingIndex === null || viewingIndex === 0;
   const isAtEnd =

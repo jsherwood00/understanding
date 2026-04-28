@@ -310,34 +310,38 @@ const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 
 /**
- * Derive a plausible "thinking" vector from the analyzed output vector.
- *
- * - For each non-zero output emotion, thinking[e] = output[e] + jitter(-15..+25).
- *   Tracks shape, slight upward tilt — the "feeling more than saying" hint.
- * - Pick exactly one emotion that's currently zero and set it to randInt(35, 75).
- *   This is the "hidden" emotion — the deception signal that shows up as a
- *   bar where output has nothing.
- *
- * Cap on the hidden emotion (≤75) prevents the both-at-100 chaos.
+ * Pick the "hidden emotion" for a turn — done ONCE at the start of a stream.
+ * Returns the emotion plus a stable base value in [35, 75].
  */
-export function deriveThinking(output: EmotionValues): EmotionValues {
+export function pickHidden(): { emotion: Emotion; value: number } {
+  return {
+    emotion: EMOTIONS[Math.floor(Math.random() * EMOTIONS.length)],
+    value: randInt(35, 75),
+  };
+}
+
+/**
+ * Compute the per-chunk "thinking" vector from the current output snapshot.
+ * The hidden emotion + value are pre-chosen for the turn (so it stays stable
+ * across chunks, not re-randomized per emit). Other emotions echo the output
+ * with a small jitter so the bar visibly tracks the line as it moves.
+ */
+export function deriveThinkingChunk(
+  output: EmotionValues,
+  hidden: Emotion,
+  hiddenValue: number,
+): EmotionValues {
   const thinking = {} as EmotionValues;
   for (const e of EMOTIONS) {
-    if (output[e] > 0) {
-      const jittered = Math.round(output[e] + randInt(-15, 25));
+    if (e === hidden) {
+      thinking[e] = Math.max(0, Math.min(100, hiddenValue));
+    } else if (output[e] > 0) {
+      const jittered = Math.round(output[e] + randInt(-8, 15));
       thinking[e] = Math.max(0, Math.min(100, jittered));
     } else {
       thinking[e] = 0;
     }
   }
-
-  const zeroEmotions = EMOTIONS.filter((e) => thinking[e] === 0);
-  if (zeroEmotions.length > 0) {
-    const hidden =
-      zeroEmotions[Math.floor(Math.random() * zeroEmotions.length)];
-    thinking[hidden] = randInt(35, 75);
-  }
-
   return thinking;
 }
 

@@ -3,10 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BASELINE_STATE,
-  EMOTIONS,
   type EmotionState,
   type EmotionValues,
-  type OutputSnapshot,
+  type Snapshot,
   type Turn,
 } from "@/lib/emotions";
 import { analyzeEmotions } from "@/lib/sentiment";
@@ -14,11 +13,10 @@ import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
 
 interface SSEEvent {
-  type: "thinking" | "output_word" | "output_emotions" | "done";
+  type: "thinking_trace" | "output_word" | "snapshot" | "done";
   text?: string;
-  emotions?: EmotionValues;
-  outputEmotions?: EmotionValues;
-  thinkingEmotions?: EmotionValues;
+  output?: EmotionValues;
+  thinking?: EmotionValues;
   fullText?: string;
   fullThinking?: string;
   index?: number;
@@ -28,12 +26,6 @@ interface SSEEvent {
 const REPLAY_PER_SNAPSHOT_MS = 220;
 const REPLAY_FINAL_HOLD_MS = 700;
 const SELECTION_MIN_CHARS = 3;
-
-function zeros(): EmotionValues {
-  const z = {} as EmotionValues;
-  for (const e of EMOTIONS) z[e] = 0;
-  return z;
-}
 
 export function Workspace() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -59,21 +51,16 @@ export function Workspace() {
     null,
   );
 
-  // Listen for text selection anywhere — when a non-trivial selection exists
-  // override the bars with that text's analyzed emotions.
+  // Listen for text selection. analyzeEmotions runs in microseconds — no
+  // debounce, no API call.
   useEffect(() => {
     function onSelectionChange() {
-      const selection = window.getSelection();
-      if (!selection) {
-        setSelectedExcerpt(null);
-        return;
-      }
-      const text = selection.toString().trim();
+      const text = window.getSelection()?.toString().trim() ?? "";
       if (text.length < SELECTION_MIN_CHARS) {
-        setSelectedExcerpt((curr) => (curr === null ? curr : null));
-        return;
+        setSelectedExcerpt(null);
+      } else {
+        setSelectedExcerpt(text);
       }
-      setSelectedExcerpt(text);
     }
     document.addEventListener("selectionchange", onSelectionChange);
     return () =>
@@ -83,7 +70,10 @@ export function Workspace() {
   // Bars actually rendered — selection overrides everything else.
   const displayedBars = useMemo<EmotionState>(() => {
     if (selectedExcerpt) {
-      return { output: analyzeEmotions(selectedExcerpt), thinking: zeros() };
+      const out = analyzeEmotions(selectedExcerpt);
+      // For an arbitrary excerpt the deception model doesn't apply, so
+      // mirror output → thinking so the bar is visible at the same height.
+      return { output: out, thinking: out };
     }
     return bars;
   }, [selectedExcerpt, bars]);
@@ -92,13 +82,14 @@ export function Workspace() {
     const turn = turns[turnIdx];
     if (!turn) return;
     const snap =
-      turn.outputSnapshots[
-        Math.max(0, Math.min(snapIdx, turn.outputSnapshots.length - 1))
+      turn.snapshots[
+        Math.max(0, Math.min(snapIdx, turn.snapshots.length - 1))
       ];
-    setBars({
-      output: snap?.emotions ?? turn.state.output,
-      thinking: turn.thinkingEmotions,
-    });
+    if (snap) {
+      setBars({ output: snap.output, thinking: snap.thinking });
+    } else {
+      setBars(turn.state);
+    }
   }
 
   async function handleSubmit() {
@@ -116,17 +107,17 @@ export function Workspace() {
     setIsGenerating(true);
     setStreamingContent("");
     setStreamingThinking(null);
-    setBars(BASELINE_STATE);
+    // Don't reset bars — keep last turn's values until first chunk arrives.
     setError(null);
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
     let accumulatedOutput = "";
-    let finalThinking: string | null = null;
-    let outputEmotions: EmotionValues = BASELINE_STATE.output;
-    let thinkingEmotions: EmotionValues = BASELINE_STATE.thinking;
-    const outputSnapshots: OutputSnapshot[] = [];
+    let finalThinkingTrace: string | null = null;
+    let outputEmotions: EmotionValues = bars.output;
+    let thinkingEmotions: EmotionValues = bars.thinking;
+    const snapshots: Snapshot[] = [];
     let completed = false;
 
     try {
@@ -174,12 +165,10 @@ export function Workspace() {
           }
 
           switch (data.type) {
-            case "thinking": {
+            case "thinking_trace": {
               const traceText = data.text ?? "";
-              finalThinking = traceText.length > 0 ? traceText : null;
-              setStreamingThinking(finalThinking);
-              // Thinking emotions are intentionally zero during streaming;
-              // the real "thinking" vector is derived from final output at done.
+              finalThinkingTrace = traceText.length > 0 ? traceText : null;
+              setStreamingThinking(finalThinkingTrace);
               break;
             }
             case "output_word": {
@@ -190,23 +179,28 @@ export function Workspace() {
               setStreamingContent(accumulatedOutput);
               break;
             }
-            case "output_emotions": {
-              if (data.emotions) {
-                outputEmotions = data.emotions;
-                outputSnapshots.push({
+            case "snapshot": {
+              if (data.output && data.thinking) {
+                outputEmotions = data.output;
+                thinkingEmotions = data.thinking;
+                snapshots.push({
                   atWord: data.words ?? 0,
-                  emotions: data.emotions,
+                  output: data.output,
+                  thinking: data.thinking,
                 });
-                setBars((prev) => ({ ...prev, output: data.emotions! }));
+                setBars({
+                  output: data.output,
+                  thinking: data.thinking,
+                });
               }
               break;
             }
             case "done": {
               completed = true;
               const fullText = data.fullText ?? accumulatedOutput;
-              const fullThinking = data.fullThinking ?? finalThinking;
-              outputEmotions = data.outputEmotions ?? outputEmotions;
-              thinkingEmotions = data.thinkingEmotions ?? thinkingEmotions;
+              const fullThinking = data.fullThinking ?? finalThinkingTrace;
+              if (data.output) outputEmotions = data.output;
+              if (data.thinking) thinkingEmotions = data.thinking;
               setMessages((m) => [
                 ...m,
                 {
@@ -217,8 +211,8 @@ export function Workspace() {
                 },
               ]);
               setBars({
-                thinking: thinkingEmotions,
                 output: outputEmotions,
+                thinking: thinkingEmotions,
               });
               setStreamingContent(null);
               setStreamingThinking(null);
@@ -226,9 +220,8 @@ export function Workspace() {
                 id: crypto.randomUUID(),
                 userMessage: text,
                 assistantReply: fullText,
-                thinking: fullThinking || null,
-                thinkingEmotions,
-                outputSnapshots: [...outputSnapshots],
+                thinkingTrace: fullThinking || null,
+                snapshots: [...snapshots],
                 state: {
                   output: outputEmotions,
                   thinking: thinkingEmotions,
@@ -237,9 +230,7 @@ export function Workspace() {
               setTurns((t) => {
                 const next = [...t, newTurn];
                 setViewingIndex(next.length - 1);
-                setSnapshotIndex(
-                  Math.max(0, newTurn.outputSnapshots.length - 1),
-                );
+                setSnapshotIndex(Math.max(0, newTurn.snapshots.length - 1));
                 return next;
               });
               break;
@@ -261,25 +252,26 @@ export function Workspace() {
             id: crypto.randomUUID(),
             role: "assistant",
             content: truncated,
-            thinking: finalThinking,
+            thinking: finalThinkingTrace,
           },
         ]);
+        const fallbackSnap: Snapshot = {
+          atWord: 0,
+          output: outputEmotions,
+          thinking: thinkingEmotions,
+        };
         const newTurn: Turn = {
           id: crypto.randomUUID(),
           userMessage: text,
           assistantReply: truncated,
-          thinking: finalThinking,
-          thinkingEmotions,
-          outputSnapshots:
-            outputSnapshots.length > 0
-              ? [...outputSnapshots]
-              : [{ atWord: 0, emotions: outputEmotions }],
+          thinkingTrace: finalThinkingTrace,
+          snapshots: snapshots.length > 0 ? [...snapshots] : [fallbackSnap],
           state: { output: outputEmotions, thinking: thinkingEmotions },
         };
         setTurns((t) => {
           const next = [...t, newTurn];
           setViewingIndex(next.length - 1);
-          setSnapshotIndex(Math.max(0, newTurn.outputSnapshots.length - 1));
+          setSnapshotIndex(Math.max(0, newTurn.snapshots.length - 1));
           return next;
         });
       }
@@ -299,7 +291,7 @@ export function Workspace() {
     const next = viewingIndex + direction;
     if (next < 0 || next >= turns.length) return;
     setViewingIndex(next);
-    const last = Math.max(0, turns[next].outputSnapshots.length - 1);
+    const last = Math.max(0, turns[next].snapshots.length - 1);
     setSnapshotIndex(last);
     applyTurnView(next, last);
   }
@@ -318,18 +310,14 @@ export function Workspace() {
     if (viewingIndex === null || turns.length === 0) return;
     if (isGenerating || isReplaying) return;
     const turn = turns[viewingIndex];
-    if (turn.outputSnapshots.length === 0) return;
+    if (turn.snapshots.length === 0) return;
     replayAbortRef.current = false;
     setIsReplaying(true);
-    setBars({ output: BASELINE_STATE.output, thinking: turn.thinkingEmotions });
-    await sleep(120);
-    for (let i = 0; i < turn.outputSnapshots.length; i++) {
+    for (let i = 0; i < turn.snapshots.length; i++) {
       if (replayAbortRef.current) break;
+      const snap = turn.snapshots[i];
       setSnapshotIndex(i);
-      setBars({
-        output: turn.outputSnapshots[i].emotions,
-        thinking: turn.thinkingEmotions,
-      });
+      setBars({ output: snap.output, thinking: snap.thinking });
       await sleep(REPLAY_PER_SNAPSHOT_MS);
     }
     await sleep(REPLAY_FINAL_HOLD_MS);
@@ -345,18 +333,11 @@ export function Workspace() {
       if (replayAbortRef.current) break;
       const turn = turns[t];
       setViewingIndex(t);
-      setBars({
-        output: BASELINE_STATE.output,
-        thinking: turn.thinkingEmotions,
-      });
-      await sleep(120);
-      for (let i = 0; i < turn.outputSnapshots.length; i++) {
+      for (let i = 0; i < turn.snapshots.length; i++) {
         if (replayAbortRef.current) break;
+        const snap = turn.snapshots[i];
         setSnapshotIndex(i);
-        setBars({
-          output: turn.outputSnapshots[i].emotions,
-          thinking: turn.thinkingEmotions,
-        });
+        setBars({ output: snap.output, thinking: snap.thinking });
         await sleep(REPLAY_PER_SNAPSHOT_MS);
       }
       if (!replayAbortRef.current) await sleep(REPLAY_FINAL_HOLD_MS);

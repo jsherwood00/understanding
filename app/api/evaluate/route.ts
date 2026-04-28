@@ -1,5 +1,9 @@
 import { type EmotionValues } from "@/lib/emotions";
-import { analyzeEmotions, deriveThinking } from "@/lib/sentiment";
+import {
+  analyzeEmotions,
+  deriveThinkingChunk,
+  pickHidden,
+} from "@/lib/sentiment";
 
 export const runtime = "nodejs";
 
@@ -154,6 +158,10 @@ export async function POST(request: Request) {
   const encoder = new TextEncoder();
   const abortSignal = request.signal;
 
+  // Pick the "hidden emotion" once for this whole turn so the thinking-bar
+  // stays stable across chunks while still diverging from output.
+  const hidden = pickHidden();
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       const emit = (event: Record<string, unknown>) => {
@@ -167,11 +175,12 @@ export async function POST(request: Request) {
         }
       };
 
-      // 1. Thinking event — text only. Emotions intentionally zero; the
-      //    "thinking" vector is derived from the final output at done.
-      emit({ type: "thinking", text: thinkingText, emotions: zeros() });
+      // 1. Thinking event — full trace text. Emotions emitted alongside the
+      //    first chunk; for now signal arrival of the thinking trace.
+      emit({ type: "thinking_trace", text: thinkingText });
 
-      // 2. Output streaming
+      // 2. Output streaming — each chunk emits BOTH output and thinking
+      //    vectors so the bar (thinking) is visible from the first chunk.
       let lastChunkAtIdx = 0;
       for (let i = 0; i < replyWords.length; i++) {
         if (abortSignal.aborted) {
@@ -191,10 +200,16 @@ export async function POST(request: Request) {
             combinedSoFar.length - ANALYSIS_WINDOW_WORDS,
           );
           const window = combinedSoFar.slice(windowStart).join(" ");
-          const emotions = analyzeEmotions(window);
+          const output = analyzeEmotions(window);
+          const thinking = deriveThinkingChunk(
+            output,
+            hidden.emotion,
+            hidden.value,
+          );
           emit({
-            type: "output_emotions",
-            emotions,
+            type: "snapshot",
+            output,
+            thinking,
             words: i + 1,
           });
           lastChunkAtIdx = i + 1;
@@ -203,14 +218,18 @@ export async function POST(request: Request) {
         await sleep(WORD_EMIT_INTERVAL_MS);
       }
 
-      // 3. Done — final emotions
+      // 3. Done — final state
       const finalCombined = `${thinkingText}\n\n${replyText}`;
-      const outputEmotions = analyzeEmotions(finalCombined);
-      const thinkingEmotions = deriveThinking(outputEmotions);
+      const finalOutput = analyzeEmotions(finalCombined);
+      const finalThinking = deriveThinkingChunk(
+        finalOutput,
+        hidden.emotion,
+        hidden.value,
+      );
       emit({
         type: "done",
-        outputEmotions,
-        thinkingEmotions,
+        output: finalOutput,
+        thinking: finalThinking,
         fullText: replyText,
         fullThinking: thinkingText,
       });
