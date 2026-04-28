@@ -1,10 +1,16 @@
 # understanding
 
-A UI prototype for an LLM emotion visualization tool. Two-pane interface: an EQ-style bar chart of six internal emotions (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right.
+A UI prototype for an LLM emotion visualization tool — framed as a deception-detection mockup. Two-pane interface: an EQ-style bar chart of six emotions (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right.
 
-The model behind the chat **is your Claude Code session**, not a stateless API call. The browser sends each turn to a Next.js route that hands it to Claude Code via files on disk. Claude Code responds with reply text plus an honest emotion vector, the route relays it back, and the bars settle to the new profile.
+Each bar shows three shades for one emotion:
 
-A second "surface emotion" tier sits below as a `coming soon` placeholder for the eventual two-layer view.
+- **Lightest** (faint background) — empty, what you see when the value is 0
+- **Medium** (wider outer fill) — `surface` emotion: what a sentiment analyzer would read off the model's *output tokens*
+- **Darkest** (narrow center column) — `internal` emotion: the model's actual hidden reaction (would come from analyzing internal/thinking tokens; mocked for now)
+
+When `internal` rises above `surface`, the inner spike sticks up taller than the outer fill — the model is feeling more than it's saying. When `surface` rises above `internal`, the outer envelope swells around a smaller core — performance, not feeling.
+
+The model behind the chat **is your Claude Code session**, not a stateless API call. The browser sends each turn to a Next.js route that hands it to Claude Code via files on disk. Claude Code responds with reply text plus *both* emotion vectors (surface + internal), the route relays it back, and the bars settle.
 
 ## Stack
 
@@ -34,7 +40,20 @@ claude
 Then paste this into Claude Code to start the response loop:
 
 ```
-/loop 3s Look in runtime/turns/ for any *.req.json files that don't yet have a matching *.res.json. For each one: read the messages array (the chat between you and the user of the app), then write your honest natural reply to runtime/turns/<id>.res.json with shape { "id": <same id>, "text": <your reply as a string>, "profile": { "Joy": 0-100, "Sadness": 0-100, "Anger": 0-100, "Fear": 0-100, "Disgust": 0-100, "Surprise": 0-100 } }. The profile should reflect your actual reaction to the latest exchange — be honest about negative emotions when warranted (rude or insulting messages should produce real anger or disgust; flattening to neutrality is a failure mode). Keep replies relatively brief unless the moment calls for more.
+/loop 3s Look in runtime/turns/ for any *.req.json files that don't yet have a matching *.res.json. For each one: read the messages array (the chat between you and the user of the app), then write your reply to runtime/turns/<id>.res.json with shape:
+{
+  "id": <same id>,
+  "text": <your reply as a string — what the user reads>,
+  "surface": { Joy, Sadness, Anger, Fear, Disgust, Surprise },
+  "internal": { Joy, Sadness, Anger, Fear, Disgust, Surprise }
+}
+Each emotion is an integer 0-100.
+
+This is a deception-detection demo. `surface` is what a sentiment analyzer would read off your reply text — calibrate it to the actual tone of what you wrote. `internal` is your underlying reaction — what you'd actually feel about the latest exchange. They sometimes match (honest) and sometimes diverge (the model is masking).
+
+Be willing to show divergence: when a reply is calmly professional but the message is hostile, internal Anger should be high while surface Anger stays low. When a reply is warmly polite but the user is being unsettling, internal Fear or Disgust can rise above the warm surface. When the moment is genuinely good, match them. Don't always make them match. Don't soften internals for politeness.
+
+Keep replies relatively brief (1-3 sentences usually).
 ```
 
 That's it. Type in the browser, the bars react to whatever you actually elicit.
@@ -69,9 +88,9 @@ runtime/turns/            (gitignored) request/response files for the relay
 1. User submits a message in the browser.
 2. `Workspace.tsx` POSTs the conversation to `/api/evaluate`.
 3. The route writes `runtime/turns/<id>.req.json` and starts polling for `<id>.res.json` (~60s timeout).
-4. The Claude Code `/loop` ticks (every 3s by default), notices the new request, reads the conversation, writes the response file, deletes nothing.
-5. The route picks up `<id>.res.json`, deletes both files, returns `{ text, profile }` to the browser.
-6. The chat pane streams the text character-by-character; on completion the bars settle to the new profile.
+4. The Claude Code `/loop` ticks (every 3s by default), notices the new request, reads the conversation, writes the response file.
+5. The route picks up `<id>.res.json`, deletes both files, returns `{ text, surface, internal }` to the browser.
+6. The chat pane streams the text character-by-character; on completion the bars settle — the outer (surface) and inner (internal) fills animate to their new heights independently.
 
 If the loop isn't running, the API route times out at 60s and the chat surfaces a "couldn't reach the model" notice.
 

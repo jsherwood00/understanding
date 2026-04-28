@@ -91,7 +91,8 @@ export async function POST(request: Request) {
         const data = await readFile(resPath, "utf8");
         const parsed = JSON.parse(data) as {
           text?: unknown;
-          profile?: unknown;
+          surface?: unknown;
+          internal?: unknown;
         };
         await Promise.allSettled([unlink(reqPath), unlink(resPath)]);
         const text = typeof parsed.text === "string" ? parsed.text.trim() : "";
@@ -103,7 +104,8 @@ export async function POST(request: Request) {
         }
         return NextResponse.json({
           text,
-          profile: clampEmotions(parsed.profile),
+          surface: clampEmotions(parsed.surface),
+          internal: clampEmotions(parsed.internal),
         });
       } catch (err) {
         await Promise.allSettled([unlink(reqPath), unlink(resPath)]);

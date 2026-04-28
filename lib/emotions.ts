@@ -28,3 +28,15 @@ export const BASELINE: EmotionValues = {
   Disgust: 5,
   Surprise: 9,
 };
+
+export interface EmotionState {
+  /** What a sentiment analyzer would read off the model's output tokens. */
+  surface: EmotionValues;
+  /** The model's actual hidden reaction (would come from internal-token analysis). */
+  internal: EmotionValues;
+}
+
+export const BASELINE_STATE: EmotionState = {
+  surface: BASELINE,
+  internal: BASELINE,
+};

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { BASELINE, type EmotionValues } from "@/lib/emotions";
+import { BASELINE_STATE, type EmotionState } from "@/lib/emotions";
 import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
 
@@ -14,10 +14,8 @@ export function Workspace() {
   const [isTyping, setIsTyping] = useState(false);
   const [streamingFull, setStreamingFull] = useState<string | null>(null);
   const [streamedChars, setStreamedChars] = useState(0);
-  const [pendingProfile, setPendingProfile] = useState<EmotionValues | null>(
-    null,
-  );
-  const [bars, setBars] = useState<EmotionValues>(BASELINE);
+  const [pendingState, setPendingState] = useState<EmotionState | null>(null);
+  const [bars, setBars] = useState<EmotionState>(BASELINE_STATE);
   const [error, setError] = useState<string | null>(null);
 
   const isStreaming = streamingFull !== null;
@@ -35,7 +33,7 @@ export function Workspace() {
     return () => clearInterval(id);
   }, [streamingFull]);
 
-  // Completion: when full text has been emitted, finalize the message and apply the new profile.
+  // Completion: when full text has been emitted, finalize the message and apply the new state.
   useEffect(() => {
     if (streamingFull === null) return;
     if (streamedChars < streamingFull.length) return;
@@ -47,13 +45,13 @@ export function Workspace() {
       ]);
       setStreamingFull(null);
       setStreamedChars(0);
-      if (pendingProfile) {
-        setBars(pendingProfile);
-        setPendingProfile(null);
+      if (pendingState) {
+        setBars(pendingState);
+        setPendingState(null);
       }
     }, SETTLE_DELAY_MS);
     return () => clearTimeout(id);
-  }, [streamingFull, streamedChars, pendingProfile]);
+  }, [streamingFull, streamedChars, pendingState]);
 
   async function handleSubmit() {
     const text = input.trim();
@@ -83,7 +81,13 @@ export function Workspace() {
       });
 
       const payload = await res.json().catch(() => null);
-      if (!res.ok || !payload || typeof payload.text !== "string") {
+      if (
+        !res.ok ||
+        !payload ||
+        typeof payload.text !== "string" ||
+        !payload.surface ||
+        !payload.internal
+      ) {
         const message =
           (payload && typeof payload.error === "string" && payload.error) ||
           `Request failed (${res.status}).`;
@@ -92,7 +96,10 @@ export function Workspace() {
 
       setIsTyping(false);
       setStreamedChars(0);
-      setPendingProfile(payload.profile as EmotionValues);
+      setPendingState({
+        surface: payload.surface,
+        internal: payload.internal,
+      });
       setStreamingFull(payload.text);
     } catch (e) {
       setIsTyping(false);
@@ -103,7 +110,7 @@ export function Workspace() {
   return (
     <>
       <div className="w-2/5 border-r border-divider">
-        <EmotionPanel values={bars} />
+        <EmotionPanel state={bars} />
       </div>
       <div className="w-3/5">
         <ChatPane
