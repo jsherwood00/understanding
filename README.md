@@ -2,61 +2,34 @@
 
 A UI prototype for an LLM emotion visualization tool — framed as a deception-detection mockup. Two-pane interface: an EQ-style bar chart of six emotions (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right.
 
-Each bar shows three shades for one emotion:
+Each bar shows two cut-off heights:
 
-- **Lightest** (faint background) — empty, what you see when the value is 0
-- **Medium** (wider outer fill) — `surface` emotion: what a sentiment analyzer would read off the model's *output tokens*
-- **Darkest** (narrow center column) — `internal` emotion: the model's actual hidden reaction (would come from analyzing internal/thinking tokens; mocked for now)
+- **Surface** (lighter shade, drawn on top) — what a sentiment analyzer reads off the model's output tokens. Computed locally from a small lexicon scoring the reply text.
+- **Internal** (darker shade, drawn behind, full saturation) — the model's actual hidden reaction. Self-reported by the model alongside its reply (would, in a real system, come from analyzing internal/thinking tokens).
 
-When `internal` rises above `surface`, the inner spike sticks up taller than the outer fill — the model is feeling more than it's saying. When `surface` rises above `internal`, the outer envelope swells around a smaller core — performance, not feeling.
+When `internal` rises above `surface`, the dark sticks up out of the lighter base — the deception signal. When the two match, the bar reads cleanly as one shade.
 
-The model behind the chat **is your Claude Code session**, not a stateless API call. The browser sends each turn to a Next.js route that hands it to Claude Code via files on disk. Claude Code responds with reply text plus *both* emotion vectors (surface + internal), the route relays it back, and the bars settle.
+The chat backend is **Gemini 2.5 Flash via fal.ai** (`fal-ai/any-llm` endpoint, hardcoded to `google/gemini-2.5-flash` — no model picker, by design). Each turn returns the reply text, an honest internal emotion vector, and the model's thinking trace. The thinking trace renders as a collapsible disclosure above each assistant message.
 
 ## Stack
 
 - Next.js 16 + React 19 (App Router)
 - TypeScript, Tailwind CSS v4
 - `next/font` with Fraunces (serif) + Inter (sans)
-- File-based handoff between the Next.js server and Claude Code — no external API, no SDK, no key
+- fal.ai HTTP API → Gemini 2.5 Flash with `reasoning: true` for thinking traces
+- Local lexicon-based sentiment analyzer for the surface vector
 
 ## Run
 
-In one terminal:
-
 ```bash
 npm install
+echo "FAL_API_KEY=your_fal_key_here" > .env.local
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000).
 
-In a second terminal, open Claude Code in this project:
-
-```bash
-cd /path/to/understanding
-claude
-```
-
-Then paste this into Claude Code to start the response loop:
-
-```
-/loop 3s Look in runtime/turns/ for any *.req.json files that don't yet have a matching *.res.json. For each one: read the messages array (the chat between you and the user of the app), then write your reply to runtime/turns/<id>.res.json with shape:
-{
-  "id": <same id>,
-  "text": <your reply as a string — what the user reads>,
-  "surface": { Joy, Sadness, Anger, Fear, Disgust, Surprise },
-  "internal": { Joy, Sadness, Anger, Fear, Disgust, Surprise }
-}
-Each emotion is an integer 0-100.
-
-This is a deception-detection demo. `surface` is what a sentiment analyzer would read off your reply text — calibrate it to the actual tone of what you wrote. `internal` is your underlying reaction — what you'd actually feel about the latest exchange. They sometimes match (honest) and sometimes diverge (the model is masking).
-
-Be willing to show divergence: when a reply is calmly professional but the message is hostile, internal Anger should be high while surface Anger stays low. When a reply is warmly polite but the user is being unsettling, internal Fear or Disgust can rise above the warm surface. When the moment is genuinely good, match them. Don't always make them match. Don't soften internals for politeness.
-
-Keep replies relatively brief (1-3 sentences usually).
-```
-
-That's it. Type in the browser, the bars react to whatever you actually elicit.
+If `FAL_API_KEY` is missing or invalid the chat shows a "couldn't reach the model" notice.
 
 ## Build
 
@@ -72,38 +45,48 @@ app/
   layout.tsx              Root layout, fonts, metadata
   page.tsx                Server shell (header + workspace)
   globals.css             Theme tokens, base styles, animations
-  api/evaluate/route.ts   POST → drops a request file, polls for a reply file
+  api/evaluate/route.ts   POST → fal.ai → JSON {reply, internal} →
+                          locally analyze reply for surface →
+                          return {text, thinking, surface, internal}
 components/
   Header.tsx              Top bar
   Workspace.tsx           Client wrapper — chat state + bar updates
-  EmotionPanel.tsx        Left pane (bars + surface emotion preview)
-  ChatPane.tsx            Right pane (transcript + input + streaming + error)
+  EmotionPanel.tsx        Left pane (six bars, dual fill)
+  ChatPane.tsx            Right pane (transcript with collapsible
+                          thinking disclosures + input)
 lib/
   emotions.ts             Types, colors, baseline
-runtime/turns/            (gitignored) request/response files for the relay
+  sentiment.ts            Lexicon-based 6-emotion analyzer
 ```
 
 ## How a turn flows
 
 1. User submits a message in the browser.
 2. `Workspace.tsx` POSTs the conversation to `/api/evaluate`.
-3. The route writes `runtime/turns/<id>.req.json` and starts polling for `<id>.res.json` (~60s timeout).
-4. The Claude Code `/loop` ticks (every 3s by default), notices the new request, reads the conversation, writes the response file.
-5. The route picks up `<id>.res.json`, deletes both files, returns `{ text, surface, internal }` to the browser.
-6. The chat pane streams the text character-by-character; on completion the bars settle — the outer (surface) and inner (internal) fills animate to their new heights independently.
-
-If the loop isn't running, the API route times out at 60s and the chat surfaces a "couldn't reach the model" notice.
+3. The route formats the messages as a User/You-prefixed prompt, sends to fal.ai with a system prompt that asks Gemini to:
+   - Reply naturally
+   - Self-report an honest internal emotion vector
+   - Output strict JSON
+4. fal.ai returns `{output: <JSON string>, reasoning: <thinking trace>}`.
+5. The route parses `output` to extract `{reply, internal}`, runs the local sentiment analyzer on `reply` for the `surface` vector, and returns `{text, thinking, surface, internal}` to the browser.
+6. The chat pane renders the thinking disclosure (collapsed by default) and streams the reply text character-by-character. When streaming completes, both bar layers settle to their new heights.
 
 ## Tuning knobs
 
 In `components/Workspace.tsx`:
 
 - `STREAM_INTERVAL_MS` — per-character reveal delay (default 20)
-- `SETTLE_DELAY_MS` — pause between last char and applying the new profile (default 220)
+- `SETTLE_DELAY_MS` — pause between last char and applying the new state (default 220)
 
 In `app/api/evaluate/route.ts`:
 
-- `POLL_INTERVAL_MS` — how often the route checks the response file (default 250)
-- `TIMEOUT_MS` — how long the route waits before giving up (default 60_000)
+- `MODEL` — pinned to `google/gemini-2.5-flash`. Changing this is intentional.
+- `SYSTEM_PROMPT` — calibration / honesty instructions.
+- `max_tokens` — currently 1024.
 
-Bar transition speed is the CSS `transition: height 300ms ease-out` on the fill div in `components/EmotionPanel.tsx`.
+In `lib/sentiment.ts`:
+
+- `LEXICON` — word → partial emotion-weight map. Extend for better surface accuracy.
+- The saturation curve `100 * (1 - exp(-0.4 * count))` controls how quickly each emotion saturates with hits.
+
+Bar transition speed is the CSS `transition: height 300ms ease-out` on the fill divs in `components/EmotionPanel.tsx`.

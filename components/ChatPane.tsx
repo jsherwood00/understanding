@@ -6,6 +6,7 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  thinking?: string | null;
 }
 
 interface ChatPaneProps {
@@ -15,6 +16,7 @@ interface ChatPaneProps {
   onSubmit: () => void;
   isTyping: boolean;
   streamingText: string | null;
+  streamingThinking: string | null;
   isLocked: boolean;
   error: string | null;
   onDismissError: () => void;
@@ -27,6 +29,7 @@ export function ChatPane({
   onSubmit,
   isTyping,
   streamingText,
+  streamingThinking,
   isLocked,
   error,
   onDismissError,
@@ -64,6 +67,7 @@ export function ChatPane({
                   id: "streaming",
                   role: "assistant",
                   content: streamingText,
+                  thinking: streamingThinking,
                 }}
                 streaming
               />
@@ -110,20 +114,39 @@ function MessageBubble({
   message: ChatMessage;
   streaming?: boolean;
 }) {
-  const isUser = message.role === "user";
+  if (message.role === "user") {
+    return (
+      <div className="flex justify-end">
+        <div className="max-w-[78%] rounded-2xl bg-tint px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+          {message.content}
+        </div>
+      </div>
+    );
+  }
   return (
-    <div className={isUser ? "flex justify-end" : "flex justify-start"}>
-      <div
-        className={
-          isUser
-            ? "max-w-[78%] rounded-2xl bg-tint px-4 py-2.5 text-[15px] leading-relaxed text-ink"
-            : "max-w-[78%] text-[15px] leading-relaxed text-ink"
-        }
-      >
+    <div className="flex max-w-[78%] flex-col items-start gap-2">
+      {message.thinking && <ThinkingDisclosure text={message.thinking} />}
+      <div className="text-[15px] leading-relaxed text-ink">
         {message.content}
         {streaming && <span className="stream-caret" aria-hidden />}
       </div>
     </div>
+  );
+}
+
+function ThinkingDisclosure({ text }: { text: string }) {
+  return (
+    <details className="group w-full">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10px] tracking-[0.16em] text-ink-faint uppercase select-none hover:text-ink-muted">
+        <span className="inline-block transition-transform group-open:rotate-90">
+          ▸
+        </span>
+        thinking
+      </summary>
+      <div className="mt-2 max-w-prose border-l border-divider py-1 pl-3 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-muted italic">
+        {text}
+      </div>
+    </details>
   );
 }
 

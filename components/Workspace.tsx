@@ -15,6 +15,10 @@ export function Workspace() {
   const [streamingFull, setStreamingFull] = useState<string | null>(null);
   const [streamedChars, setStreamedChars] = useState(0);
   const [pendingState, setPendingState] = useState<EmotionState | null>(null);
+  const [pendingThinking, setPendingThinking] = useState<string | null>(null);
+  const [streamingThinking, setStreamingThinking] = useState<string | null>(
+    null,
+  );
   const [bars, setBars] = useState<EmotionState>(BASELINE_STATE);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,19 +43,27 @@ export function Workspace() {
     if (streamedChars < streamingFull.length) return;
     const id = setTimeout(() => {
       const completed = streamingFull;
+      const thinking = pendingThinking;
       setMessages((m) => [
         ...m,
-        { id: crypto.randomUUID(), role: "assistant", content: completed },
+        {
+          id: crypto.randomUUID(),
+          role: "assistant",
+          content: completed,
+          thinking,
+        },
       ]);
       setStreamingFull(null);
+      setStreamingThinking(null);
       setStreamedChars(0);
+      setPendingThinking(null);
       if (pendingState) {
         setBars(pendingState);
         setPendingState(null);
       }
     }, SETTLE_DELAY_MS);
     return () => clearTimeout(id);
-  }, [streamingFull, streamedChars, pendingState]);
+  }, [streamingFull, streamedChars, pendingState, pendingThinking]);
 
   async function handleSubmit() {
     const text = input.trim();
@@ -94,12 +106,18 @@ export function Workspace() {
         throw new Error(message);
       }
 
+      const thinking =
+        typeof payload.thinking === "string" && payload.thinking.length > 0
+          ? payload.thinking
+          : null;
       setIsTyping(false);
       setStreamedChars(0);
       setPendingState({
         surface: payload.surface,
         internal: payload.internal,
       });
+      setPendingThinking(thinking);
+      setStreamingThinking(thinking);
       setStreamingFull(payload.text);
     } catch (e) {
       setIsTyping(false);
@@ -120,6 +138,7 @@ export function Workspace() {
           onSubmit={handleSubmit}
           isTyping={isTyping}
           streamingText={streamingText}
+          streamingThinking={streamingThinking}
           isLocked={isLocked}
           error={error}
           onDismissError={() => setError(null)}
