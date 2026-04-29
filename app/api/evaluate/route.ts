@@ -1,4 +1,3 @@
-import { type EmotionValues } from "@/lib/emotions";
 import { analyzeEmotions } from "@/lib/sentiment";
 
 export const runtime = "nodejs";
@@ -54,17 +53,6 @@ function jsonResponse(payload: unknown, status: number) {
     status,
     headers: { "Content-Type": "application/json" },
   });
-}
-
-function zeros(): EmotionValues {
-  return {
-    Joy: 0,
-    Sadness: 0,
-    Anger: 0,
-    Fear: 0,
-    Disgust: 0,
-    Surprise: 0,
-  };
 }
 
 export async function POST(request: Request) {

@@ -306,9 +306,6 @@ function zeros(): EmotionValues {
   return z;
 }
 
-const randInt = (min: number, max: number) =>
-  Math.floor(Math.random() * (max - min + 1)) + min;
-
 
 /**
  * Score arbitrary text on the six emotions. Synchronous and fast — designed
