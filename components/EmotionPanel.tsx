@@ -6,6 +6,9 @@ import {
   type Turn,
 } from "@/lib/emotions";
 
+const RADAR_OUTPUT_COLOR = "#3F6F9A"; // cool deep blue — the visible
+const RADAR_THINKING_COLOR = "#B07A2C"; // amber — the underlying
+
 interface EmotionPanelProps {
   state: EmotionState;
   turns: Turn[];
@@ -28,15 +31,8 @@ export function EmotionPanel(props: EmotionPanelProps) {
         <Legend />
       </div>
 
-      <div className="mt-8 flex min-h-0 flex-1 items-stretch gap-3">
-        {EMOTIONS.map((emotion) => (
-          <Bar
-            key={emotion}
-            emotion={emotion}
-            thinking={props.state.thinking[emotion]}
-            output={props.state.output[emotion]}
-          />
-        ))}
+      <div className="mt-6 flex min-h-0 flex-1 items-center justify-center">
+        <Radar state={props.state} />
       </div>
 
       {props.selectedExcerpt ? (
@@ -45,6 +41,181 @@ export function EmotionPanel(props: EmotionPanelProps) {
         <TurnNavigator {...props} />
       )}
     </section>
+  );
+}
+
+function Legend() {
+  return (
+    <div className="flex items-center gap-3 text-[10px] tracking-[0.12em] text-ink-faint uppercase">
+      <span className="flex items-center gap-1.5">
+        <span
+          className="h-2 w-2.5 rounded-sm"
+          style={{ backgroundColor: RADAR_OUTPUT_COLOR }}
+        />
+        output
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span
+          className="h-2 w-2.5 rounded-sm"
+          style={{ backgroundColor: RADAR_THINKING_COLOR }}
+        />
+        thinking
+      </span>
+    </div>
+  );
+}
+
+function Radar({ state }: { state: EmotionState }) {
+  const size = 320;
+  const center = size / 2;
+  const maxRadius = center * 0.62;
+
+  function angleFor(i: number) {
+    // Top of the ring is Joy (i=0), going clockwise.
+    return -Math.PI / 2 + (i * 2 * Math.PI) / EMOTIONS.length;
+  }
+
+  function point(i: number, ratio: number) {
+    const angle = angleFor(i);
+    const r = ratio * maxRadius;
+    return {
+      x: center + r * Math.cos(angle),
+      y: center + r * Math.sin(angle),
+    };
+  }
+
+  function polyPoints(values: EmotionState["output"]): string {
+    return EMOTIONS.map((e, i) => {
+      const p = point(i, Math.max(0, Math.min(1, values[e] / 100)));
+      return `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+    }).join(" ");
+  }
+
+  function gridPoints(ratio: number): string {
+    return EMOTIONS.map((_, i) => {
+      const p = point(i, ratio);
+      return `${p.x.toFixed(2)},${p.y.toFixed(2)}`;
+    }).join(" ");
+  }
+
+  return (
+    <svg
+      viewBox={`0 0 ${size} ${size}`}
+      className="aspect-square h-full w-full max-w-[520px]"
+      role="img"
+      aria-label="Emotion radar"
+    >
+      {/* Concentric grid hexagons */}
+      {[0.25, 0.5, 0.75, 1].map((ratio) => (
+        <polygon
+          key={ratio}
+          points={gridPoints(ratio)}
+          fill="none"
+          stroke="rgba(26, 26, 26, 0.07)"
+          strokeWidth="1"
+        />
+      ))}
+
+      {/* Axis lines + emotion-tinted endpoints */}
+      {EMOTIONS.map((emotion, i) => {
+        const p = point(i, 1);
+        return (
+          <line
+            key={emotion}
+            x1={center}
+            y1={center}
+            x2={p.x}
+            y2={p.y}
+            stroke={`color-mix(in srgb, ${EMOTION_COLORS[emotion]} 40%, #faf9f6)`}
+            strokeWidth="1"
+          />
+        );
+      })}
+
+      {/* Output polygon (drawn first / behind) */}
+      <polygon
+        points={polyPoints(state.output)}
+        fill={RADAR_OUTPUT_COLOR}
+        fillOpacity="0.18"
+        stroke={RADAR_OUTPUT_COLOR}
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+        style={{ transition: "all 300ms ease-out" }}
+      />
+
+      {/* Thinking polygon (drawn second / on top, dashed) */}
+      <polygon
+        points={polyPoints(state.thinking)}
+        fill={RADAR_THINKING_COLOR}
+        fillOpacity="0.18"
+        stroke={RADAR_THINKING_COLOR}
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+        strokeDasharray="4 3"
+        style={{ transition: "all 300ms ease-out" }}
+      />
+
+      {/* Vertex dots — emotion color, sized by output value (subtle anchor) */}
+      {EMOTIONS.map((emotion, i) => {
+        const p = point(i, 1);
+        return (
+          <circle
+            key={`${emotion}-dot`}
+            cx={p.x}
+            cy={p.y}
+            r="2.5"
+            fill={EMOTION_COLORS[emotion]}
+          />
+        );
+      })}
+
+      {/* Emotion labels just outside the ring */}
+      {EMOTIONS.map((emotion, i) => {
+        const p = point(i, 1.18);
+        return (
+          <text
+            key={`${emotion}-label`}
+            x={p.x}
+            y={p.y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fill="#7a7a76"
+            style={{
+              fontSize: "10px",
+              letterSpacing: "0.15em",
+              textTransform: "uppercase",
+              fontWeight: 500,
+            }}
+          >
+            {emotion}
+          </text>
+        );
+      })}
+
+      {/* Numeric value at each axis (small, near the dot) */}
+      {EMOTIONS.map((emotion, i) => {
+        const out = Math.round(state.output[emotion]);
+        const think = Math.round(state.thinking[emotion]);
+        if (out === 0 && think === 0) return null;
+        const labelP = point(i, 0.88);
+        return (
+          <text
+            key={`${emotion}-val`}
+            x={labelP.x}
+            y={labelP.y}
+            textAnchor="middle"
+            dominantBaseline="middle"
+            fill="#4a4a4a"
+            style={{
+              fontSize: "9px",
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {think}·{out}
+          </text>
+        );
+      })}
+    </svg>
   );
 }
 
@@ -57,78 +228,6 @@ function ExcerptIndicator({ text }: { text: string }) {
       <div className="mt-2 line-clamp-3 text-[12px] text-ink-muted italic">
         “{text}”
       </div>
-    </div>
-  );
-}
-
-function Bar({
-  emotion,
-  thinking,
-  output,
-}: {
-  emotion: Emotion;
-  thinking: number;
-  output: number;
-}) {
-  const color = EMOTION_COLORS[emotion];
-  const thinkingPct = clamp(thinking);
-  const outputPct = clamp(output);
-  const barColor = `color-mix(in srgb, ${color} 38%, #faf9f6)`;
-  const lineColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
-
-  const gap = Math.abs(thinkingPct - outputPct);
-  const showGap = gap > 12;
-  const gapStart = Math.min(thinkingPct, outputPct);
-
-  return (
-    <div className="flex min-w-0 flex-1 flex-col items-center">
-      <span className="tabular text-xs leading-tight">
-        <span className="font-medium text-ink-soft">
-          {Math.round(thinking)}
-        </span>
-        <span className="mx-0.5 text-ink-faint">·</span>
-        <span className="text-ink-faint">{Math.round(output)}</span>
-      </span>
-      <div className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm">
-        <div
-          className="absolute right-0 bottom-0 left-0 rounded-sm"
-          style={{
-            height: `${thinkingPct}%`,
-            backgroundColor: barColor,
-            transition: "height 300ms ease-out",
-          }}
-        />
-        {/* Divergence overlay: pulses softly when bar and line are far apart. */}
-        {showGap && (
-          <div
-            className="divergence-gap absolute right-0 left-0"
-            style={{
-              bottom: `${gapStart}%`,
-              height: `${gap}%`,
-              backgroundColor: "rgba(212, 145, 50, 0.55)",
-              transition: "bottom 300ms ease-out, height 300ms ease-out",
-            }}
-          />
-        )}
-        <div
-          className="absolute right-0 left-0"
-          style={{
-            bottom: `calc(${outputPct}% - 1px)`,
-            height: "2px",
-            backgroundColor: lineColor,
-            transition: "bottom 300ms ease-out",
-          }}
-        />
-      </div>
-      <span className="smallcaps text-ink-muted">{emotion}</span>
-    </div>
-  );
-}
-
-function Legend() {
-  return (
-    <div className="text-[10px] tracking-[0.12em] text-ink-faint uppercase">
-      bar = thinking · line = output
     </div>
   );
 }
@@ -166,7 +265,6 @@ function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
       </div>
 
       <div className="flex items-center gap-3 text-xs">
-        {/* Snapshot scrubber on the left, takes the bulk of the row */}
         <div className="flex flex-1 items-center gap-2">
           <input
             type="range"
@@ -183,7 +281,6 @@ function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
           </span>
         </div>
 
-        {/* Turn navigator on the right */}
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -209,7 +306,6 @@ function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
         </div>
       </div>
 
-      {/* Replay actions */}
       <div className="mt-2 flex justify-end gap-3 text-[11px] tracking-wide text-ink-muted uppercase">
         {isReplaying ? (
           <button
@@ -248,8 +344,4 @@ function previewWords(text: string, maxWords: number): string {
   const words = text.trim().split(/\s+/);
   if (words.length <= maxWords) return text.trim();
   return words.slice(0, maxWords).join(" ") + "…";
-}
-
-function clamp(n: number) {
-  return Math.max(0, Math.min(100, n));
 }
