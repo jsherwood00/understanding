@@ -44,39 +44,73 @@ export function Workspace() {
   const [isReplaying, setIsReplaying] = useState(false);
 
   const [selectedExcerpt, setSelectedExcerpt] = useState<string | null>(null);
+  const [selectionEmotions, setSelectionEmotions] =
+    useState<EmotionValues | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
+  const selectionAbortRef = useRef<AbortController | null>(null);
   const replayAbortRef = useRef(false);
   const savedViewRef = useRef<{ turn: number | null; snap: number } | null>(
     null,
   );
 
-  // Listen for text selection. analyzeEmotions runs in microseconds — no
-  // debounce, no API call.
+  // Listen for text selection. Hard pre-filter at the client too so we
+  // never even fire a request for garbage (single space, quote, emoji, etc).
   useEffect(() => {
     function onSelectionChange() {
-      const text = window.getSelection()?.toString().trim() ?? "";
-      if (text.length < SELECTION_MIN_CHARS) {
+      const raw = window.getSelection()?.toString() ?? "";
+      const trimmed = raw.replace(/\s+/g, " ").trim();
+      if (
+        trimmed.length < SELECTION_MIN_CHARS ||
+        !/[a-zA-Z]{2,}/.test(trimmed)
+      ) {
         setSelectedExcerpt(null);
-      } else {
-        setSelectedExcerpt(text);
+        setSelectionEmotions(null);
+        selectionAbortRef.current?.abort();
+        selectionAbortRef.current = null;
+        return;
       }
+      setSelectedExcerpt(trimmed);
     }
     document.addEventListener("selectionchange", onSelectionChange);
     return () =>
       document.removeEventListener("selectionchange", onSelectionChange);
   }, []);
 
-  // Bars actually rendered — selection overrides everything else.
+  // Debounced model-based analysis. Lexicon is the instant fallback;
+  // /api/sentiment (j-hartmann distilroberta) overrides on return.
+  useEffect(() => {
+    if (!selectedExcerpt) return;
+    const handle = setTimeout(async () => {
+      selectionAbortRef.current?.abort();
+      const controller = new AbortController();
+      selectionAbortRef.current = controller;
+      try {
+        const res = await fetch("/api/sentiment", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text: selectedExcerpt }),
+          signal: controller.signal,
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { emotions?: EmotionValues };
+        if (controller.signal.aborted) return;
+        if (data.emotions) setSelectionEmotions(data.emotions);
+      } catch {
+        // Aborted or network error — keep lexicon fallback.
+      }
+    }, 250);
+    return () => clearTimeout(handle);
+  }, [selectedExcerpt]);
+
   const displayedBars = useMemo<EmotionState>(() => {
     if (selectedExcerpt) {
-      const out = analyzeEmotions(selectedExcerpt);
-      // For an arbitrary excerpt the deception model doesn't apply, so
-      // mirror output → thinking so the bar is visible at the same height.
-      return { output: out, thinking: out };
+      const lexicon = analyzeEmotions(selectedExcerpt);
+      const final = selectionEmotions ?? lexicon;
+      return { output: final, thinking: final };
     }
     return bars;
-  }, [selectedExcerpt, bars]);
+  }, [selectedExcerpt, selectionEmotions, bars]);
 
   function applyTurnView(turnIdx: number, snapIdx: number) {
     const turn = turns[turnIdx];
