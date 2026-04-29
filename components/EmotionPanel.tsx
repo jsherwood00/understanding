@@ -73,8 +73,8 @@ function Bar({
   const color = EMOTION_COLORS[emotion];
   const thinkingPct = clamp(thinking);
   const outputPct = clamp(output);
-  const dotColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
-  const haloColor = `color-mix(in srgb, ${color} 60%, #1a1a1a)`;
+  const dotColor = `color-mix(in srgb, ${color} 80%, #1a1a1a)`;
+  const haloColor = `color-mix(in srgb, ${color} 70%, #faf9f6)`;
 
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
@@ -86,19 +86,21 @@ function Bar({
         <span className="text-ink-faint">{Math.round(output)}</span>
       </span>
       <div className="relative my-3 w-full max-w-[44px] flex-1 rounded-sm">
-        {/* Thinking — soft, blurred halo (diffuse / internal feel) */}
+        {/* Thinking — soft halo, much larger than the dot so it stays visible
+            even when values overlap. Solid lighter color, no blur. */}
         <div
           className="absolute left-1/2 -translate-x-1/2 rounded-full"
           style={{
-            bottom: `calc(${thinkingPct}% - 14px)`,
-            width: "28px",
-            height: "28px",
-            background: `radial-gradient(circle, ${haloColor} 0%, ${haloColor}55 40%, transparent 70%)`,
-            filter: "blur(2px)",
+            bottom: `calc(${thinkingPct}% - 18px)`,
+            width: "36px",
+            height: "36px",
+            backgroundColor: haloColor,
+            opacity: 0.5,
+            filter: "blur(3px)",
             transition: "bottom 300ms ease-out",
           }}
         />
-        {/* Output — sharp solid dot (definitive / external) */}
+        {/* Output — sharp solid dot, sits on top */}
         <div
           className="absolute left-1/2 -translate-x-1/2 rounded-full"
           style={{
