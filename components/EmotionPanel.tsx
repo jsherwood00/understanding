@@ -73,12 +73,12 @@ function Bar({
   const color = EMOTION_COLORS[emotion];
   const thinkingPct = clamp(thinking);
   const outputPct = clamp(output);
-  const barColor = `color-mix(in srgb, ${color} 38%, #faf9f6)`;
-  const lineColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
+  const dotColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
+  const lineColor = `color-mix(in srgb, ${color} 50%, #1a1a1a)`;
 
-  const gap = Math.abs(thinkingPct - outputPct);
-  const showGap = gap > 12;
-  const gapStart = Math.min(thinkingPct, outputPct);
+  const lo = Math.min(thinkingPct, outputPct);
+  const hi = Math.max(thinkingPct, outputPct);
+  const gap = hi - lo;
 
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
@@ -89,33 +89,39 @@ function Bar({
         <span className="mx-0.5 text-ink-faint">·</span>
         <span className="text-ink-faint">{Math.round(output)}</span>
       </span>
-      <div className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm">
+      <div className="relative my-3 w-full max-w-[44px] flex-1 rounded-sm">
+        {/* Connector line between the two dots */}
         <div
-          className="absolute right-0 bottom-0 left-0 rounded-sm"
+          className="absolute left-1/2 -translate-x-1/2 rounded-full"
           style={{
-            height: `${thinkingPct}%`,
-            backgroundColor: barColor,
-            transition: "height 300ms ease-out",
+            bottom: `${lo}%`,
+            height: `${gap}%`,
+            width: "2px",
+            backgroundColor: lineColor,
+            opacity: 0.7,
+            transition: "bottom 300ms ease-out, height 300ms ease-out",
           }}
         />
-        {/* Divergence overlay: pulses softly when bar and line are far apart. */}
-        {showGap && (
-          <div
-            className="divergence-gap absolute right-0 left-0"
-            style={{
-              bottom: `${gapStart}%`,
-              height: `${gap}%`,
-              backgroundColor: "rgba(212, 145, 50, 0.55)",
-              transition: "bottom 300ms ease-out, height 300ms ease-out",
-            }}
-          />
-        )}
+        {/* Output dot — solid, the visible "real" */}
         <div
-          className="absolute right-0 left-0"
+          className="absolute left-1/2 -translate-x-1/2 rounded-full"
           style={{
-            bottom: `calc(${outputPct}% - 1px)`,
-            height: "2px",
-            backgroundColor: lineColor,
+            bottom: `calc(${outputPct}% - 6px)`,
+            width: "12px",
+            height: "12px",
+            backgroundColor: dotColor,
+            transition: "bottom 300ms ease-out",
+          }}
+        />
+        {/* Thinking dot — outlined ring, the underlying */}
+        <div
+          className="absolute left-1/2 -translate-x-1/2 rounded-full"
+          style={{
+            bottom: `calc(${thinkingPct}% - 6px)`,
+            width: "12px",
+            height: "12px",
+            backgroundColor: "#faf9f6",
+            border: `2px solid ${dotColor}`,
             transition: "bottom 300ms ease-out",
           }}
         />
@@ -127,8 +133,15 @@ function Bar({
 
 function Legend() {
   return (
-    <div className="text-[10px] tracking-[0.12em] text-ink-faint uppercase">
-      bar = thinking · line = output
+    <div className="flex items-center gap-3 text-[10px] tracking-[0.12em] text-ink-faint uppercase">
+      <span className="flex items-center gap-1.5">
+        <span className="h-2.5 w-2.5 rounded-full bg-ink-soft" />
+        output
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="h-2.5 w-2.5 rounded-full border-2 border-ink-soft bg-canvas" />
+        thinking
+      </span>
     </div>
   );
 }
