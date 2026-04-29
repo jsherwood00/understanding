@@ -93,3 +93,17 @@ body {
   margin-left: 2px;
   animation: caret-blink 1s steps(1) infinite;
 }
+
+@keyframes divergence-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.75;
+  }
+}
+
+.divergence-gap {
+  animation: divergence-pulse 1.8s ease-in-out infinite;
+}

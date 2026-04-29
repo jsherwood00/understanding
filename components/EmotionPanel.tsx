@@ -75,6 +75,11 @@ function Bar({
   const outputPct = clamp(output);
   const barColor = `color-mix(in srgb, ${color} 38%, #faf9f6)`;
   const lineColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
+
+  const gap = Math.abs(thinkingPct - outputPct);
+  const showGap = gap > 12;
+  const gapStart = Math.min(thinkingPct, outputPct);
+
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
       <span className="tabular text-xs leading-tight">
@@ -93,6 +98,18 @@ function Bar({
             transition: "height 300ms ease-out",
           }}
         />
+        {/* Divergence overlay: pulses softly when bar and line are far apart. */}
+        {showGap && (
+          <div
+            className="divergence-gap absolute right-0 left-0"
+            style={{
+              bottom: `${gapStart}%`,
+              height: `${gap}%`,
+              backgroundColor: "rgba(212, 145, 50, 0.55)",
+              transition: "bottom 300ms ease-out, height 300ms ease-out",
+            }}
+          />
+        )}
         <div
           className="absolute right-0 left-0"
           style={{
