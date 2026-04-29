@@ -73,12 +73,12 @@ function Bar({
   const color = EMOTION_COLORS[emotion];
   const thinkingPct = clamp(thinking);
   const outputPct = clamp(output);
-  const barColor = `color-mix(in srgb, ${color} 38%, #faf9f6)`;
-  const lineColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
+  const stripColor = `color-mix(in srgb, ${color} 60%, #1a1a1a)`;
+  const capColor = `color-mix(in srgb, ${color} 90%, #1a1a1a)`;
 
-  const gap = Math.abs(thinkingPct - outputPct);
-  const showGap = gap > 12;
-  const gapStart = Math.min(thinkingPct, outputPct);
+  const lo = Math.min(thinkingPct, outputPct);
+  const hi = Math.max(thinkingPct, outputPct);
+  const span = Math.max(0.5, hi - lo);
 
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
@@ -90,32 +90,34 @@ function Bar({
         <span className="text-ink-faint">{Math.round(output)}</span>
       </span>
       <div className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm">
+        {/* Filled strip from min(thinking, output) → max */}
         <div
-          className="absolute right-0 bottom-0 left-0 rounded-sm"
+          className="absolute right-0 left-0 rounded-sm"
           style={{
-            height: `${thinkingPct}%`,
-            backgroundColor: barColor,
-            transition: "height 300ms ease-out",
+            bottom: `${lo}%`,
+            height: `${span}%`,
+            backgroundColor: stripColor,
+            opacity: 0.55,
+            transition: "bottom 300ms ease-out, height 300ms ease-out",
           }}
         />
-        {/* Divergence overlay: pulses softly when bar and line are far apart. */}
-        {showGap && (
-          <div
-            className="divergence-gap absolute right-0 left-0"
-            style={{
-              bottom: `${gapStart}%`,
-              height: `${gap}%`,
-              backgroundColor: "rgba(212, 145, 50, 0.55)",
-              transition: "bottom 300ms ease-out, height 300ms ease-out",
-            }}
-          />
-        )}
+        {/* Output cap — solid line */}
         <div
           className="absolute right-0 left-0"
           style={{
             bottom: `calc(${outputPct}% - 1px)`,
             height: "2px",
-            backgroundColor: lineColor,
+            backgroundColor: capColor,
+            transition: "bottom 300ms ease-out",
+          }}
+        />
+        {/* Thinking cap — dotted line */}
+        <div
+          className="absolute right-0 left-0"
+          style={{
+            bottom: `calc(${thinkingPct}% - 1px)`,
+            height: "2px",
+            backgroundImage: `repeating-linear-gradient(to right, ${capColor} 0 3px, transparent 3px 6px)`,
             transition: "bottom 300ms ease-out",
           }}
         />
@@ -127,8 +129,21 @@ function Bar({
 
 function Legend() {
   return (
-    <div className="text-[10px] tracking-[0.12em] text-ink-faint uppercase">
-      bar = thinking · line = output
+    <div className="flex items-center gap-3 text-[10px] tracking-[0.12em] text-ink-faint uppercase">
+      <span className="flex items-center gap-1.5">
+        <span
+          className="block h-[2px] w-3"
+          style={{
+            backgroundImage:
+              "repeating-linear-gradient(to right, #4a4a4a 0 3px, transparent 3px 6px)",
+          }}
+        />
+        thinking
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span className="block h-[2px] w-3 bg-ink-soft" />
+        output
+      </span>
     </div>
   );
 }
