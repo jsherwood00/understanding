@@ -309,23 +309,6 @@ function zeros(): EmotionValues {
 const randInt = (min: number, max: number) =>
   Math.floor(Math.random() * (max - min + 1)) + min;
 
-/**
- * Per-chunk "thinking" vector — echoes the output with a small jitter so the
- * bar sits visibly close to the line but not identical. No hidden emotion,
- * no stuck bar; both values track the actual text content.
- */
-export function jitterThinking(output: EmotionValues): EmotionValues {
-  const thinking = {} as EmotionValues;
-  for (const e of EMOTIONS) {
-    if (output[e] > 0) {
-      const jittered = Math.round(output[e] + randInt(-6, 10));
-      thinking[e] = Math.max(0, Math.min(100, jittered));
-    } else {
-      thinking[e] = 0;
-    }
-  }
-  return thinking;
-}
 
 /**
  * Score arbitrary text on the six emotions. Synchronous and fast — designed
@@ -359,11 +342,16 @@ export function analyzeEmotions(text: string): EmotionValues {
     }
   }
 
+  // Density-based scoring: emotional-word matches / total words.
+  // Short selections use a floor of 5 words to avoid runaway densities like
+  // 1/1 → 100. Adding neutral text dilutes the score; adding emotional text
+  // concentrates it — so highlighting more reliably moves the bars.
+  const denominator = Math.max(5, tokens.length);
   const out = {} as EmotionValues;
   for (const e of EMOTIONS) {
-    const c = Math.max(0, counts[e]);
-    // Saturating curve: 1 hit ≈ 33, 2 ≈ 55, 3 ≈ 70, 4 ≈ 80, plateaus near 100.
-    out[e] = clampPct(100 * (1 - Math.exp(-0.4 * c)));
+    const density = Math.max(0, counts[e]) / denominator;
+    // Curve: 5% density ≈ 50, 10% ≈ 75, 20% ≈ 94, 30% ≈ 99.
+    out[e] = clampPct(100 * (1 - Math.exp(-14 * density)));
   }
   return out;
 }

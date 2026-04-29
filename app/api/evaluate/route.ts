@@ -1,5 +1,5 @@
 import { type EmotionValues } from "@/lib/emotions";
-import { analyzeEmotions, jitterThinking } from "@/lib/sentiment";
+import { analyzeEmotions } from "@/lib/sentiment";
 
 export const runtime = "nodejs";
 
@@ -141,13 +141,15 @@ export async function POST(request: Request) {
     return jsonResponse({ error: "Model returned an empty reply." }, 502);
   }
 
-  // Combined word stream: thinking words first (already complete), then
-  // reply words (streamed). Output emotions analyze a rolling 30-word window
-  // across the COMBINED stream, every 20 reply words.
+  // Two parallel cumulative streams:
+  //  - replySoFar: just the reply text emitted so far → output emotions
+  //  - combinedSoFar: full thinking trace + reply so far → thinking emotions
+  // thinking ≥ output almost always (combined has reply + everything from CoT).
   const thinkingWords = thinkingText
     ? thinkingText.split(/\s+/).filter(Boolean)
     : [];
   const replyWords = replyText.split(/\s+/).filter(Boolean);
+  const replySoFar: string[] = [];
   const combinedSoFar = [...thinkingWords]; // append reply words as they emit
 
   const encoder = new TextEncoder();
@@ -181,17 +183,14 @@ export async function POST(request: Request) {
 
         const word = replyWords[i];
         combinedSoFar.push(word);
+        replySoFar.push(word);
         emit({ type: "output_word", text: word, index: i });
 
         const wordsSinceLastChunk = i + 1 - lastChunkAtIdx;
         const isLast = i === replyWords.length - 1;
         if (wordsSinceLastChunk >= CHUNK_WORDS || isLast) {
-          // Cumulative analysis: full thinking + reply-so-far. Values grow
-          // smoothly as emotional content accumulates instead of dropping
-          // out when a sliding window passes them.
-          const fullSoFar = combinedSoFar.join(" ");
-          const output = analyzeEmotions(fullSoFar);
-          const thinking = jitterThinking(output);
+          const output = analyzeEmotions(replySoFar.join(" "));
+          const thinking = analyzeEmotions(combinedSoFar.join(" "));
           emit({
             type: "snapshot",
             output,
@@ -205,9 +204,10 @@ export async function POST(request: Request) {
       }
 
       // 3. Done — final state
-      const finalCombined = `${thinkingText}\n\n${replyText}`;
-      const finalOutput = analyzeEmotions(finalCombined);
-      const finalThinking = jitterThinking(finalOutput);
+      const finalOutput = analyzeEmotions(replyText);
+      const finalThinking = analyzeEmotions(
+        `${thinkingText}\n\n${replyText}`,
+      );
       emit({
         type: "done",
         output: finalOutput,
