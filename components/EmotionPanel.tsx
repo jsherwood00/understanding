@@ -73,12 +73,8 @@ function Bar({
   const color = EMOTION_COLORS[emotion];
   const thinkingPct = clamp(thinking);
   const outputPct = clamp(output);
-  const barColor = `color-mix(in srgb, ${color} 38%, #faf9f6)`;
-  const lineColor = `color-mix(in srgb, ${color} 78%, #1a1a1a)`;
-
-  const gap = Math.abs(thinkingPct - outputPct);
-  const showGap = gap > 12;
-  const gapStart = Math.min(thinkingPct, outputPct);
+  const outputColor = `color-mix(in srgb, ${color} 70%, #1a1a1a)`;
+  const thinkingColor = `color-mix(in srgb, ${color} 50%, #faf9f6)`;
 
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
@@ -89,36 +85,27 @@ function Bar({
         <span className="mx-0.5 text-ink-faint">·</span>
         <span className="text-ink-faint">{Math.round(output)}</span>
       </span>
-      <div className="relative my-3 w-full max-w-[44px] flex-1 overflow-hidden rounded-sm">
-        <div
-          className="absolute right-0 bottom-0 left-0 rounded-sm"
-          style={{
-            height: `${thinkingPct}%`,
-            backgroundColor: barColor,
-            transition: "height 300ms ease-out",
-          }}
-        />
-        {/* Divergence overlay: pulses softly when bar and line are far apart. */}
-        {showGap && (
+      <div className="my-3 flex w-full max-w-[44px] flex-1 gap-[2px]">
+        <div className="relative flex-1 overflow-hidden rounded-sm">
           <div
-            className="divergence-gap absolute right-0 left-0"
+            className="absolute right-0 bottom-0 left-0 rounded-sm"
             style={{
-              bottom: `${gapStart}%`,
-              height: `${gap}%`,
-              backgroundColor: "rgba(212, 145, 50, 0.55)",
-              transition: "bottom 300ms ease-out, height 300ms ease-out",
+              height: `${thinkingPct}%`,
+              backgroundColor: thinkingColor,
+              transition: "height 300ms ease-out",
             }}
           />
-        )}
-        <div
-          className="absolute right-0 left-0"
-          style={{
-            bottom: `calc(${outputPct}% - 1px)`,
-            height: "2px",
-            backgroundColor: lineColor,
-            transition: "bottom 300ms ease-out",
-          }}
-        />
+        </div>
+        <div className="relative flex-1 overflow-hidden rounded-sm">
+          <div
+            className="absolute right-0 bottom-0 left-0 rounded-sm"
+            style={{
+              height: `${outputPct}%`,
+              backgroundColor: outputColor,
+              transition: "height 300ms ease-out",
+            }}
+          />
+        </div>
       </div>
       <span className="smallcaps text-ink-muted">{emotion}</span>
     </div>
@@ -127,8 +114,25 @@ function Bar({
 
 function Legend() {
   return (
-    <div className="text-[10px] tracking-[0.12em] text-ink-faint uppercase">
-      bar = thinking · line = output
+    <div className="flex items-center gap-3 text-[10px] tracking-[0.12em] text-ink-faint uppercase">
+      <span className="flex items-center gap-1.5">
+        <span
+          className="h-2 w-2 rounded-sm"
+          style={{
+            backgroundColor: "color-mix(in srgb, #7a7a76 50%, #faf9f6)",
+          }}
+        />
+        thinking
+      </span>
+      <span className="flex items-center gap-1.5">
+        <span
+          className="h-2 w-2 rounded-sm"
+          style={{
+            backgroundColor: "color-mix(in srgb, #7a7a76 70%, #1a1a1a)",
+          }}
+        />
+        output
+      </span>
     </div>
   );
 }
