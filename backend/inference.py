@@ -186,16 +186,30 @@ class EmotionEngine:
             next_id, past_kv = self._step(next_input, past_kv, do_sample=True)
 
     def _normalize(self, raw: dict[str, float], layer: int) -> dict[str, float]:
-        """Map raw projection scores to display range [0, 100] using
-        calibration if present, otherwise fallback linear map."""
+        """Map raw projection scores to display range [0, 100].
+
+        Preferred schema (shift_and_scale): pins neutral text to 0 and a
+        high percentile of matching-emotional text to 100. Negative shifted
+        values clip to 0 — "less aligned than neutral" reads as no signal,
+        not as a negative bar.
+
+            display = clip(0, 100, (raw - neutral_mean) / scale * 100)
+
+        Fallback schema (percentile_5_95, legacy): linear p5→0, p95→100.
+        """
         out: dict[str, float] = {}
         for emo, val in raw.items():
+            bounds = None
             if self.calibration:
                 bounds = self.calibration.get(emo, {}).get(str(layer))
-                if bounds:
-                    lo, hi = bounds["min"], bounds["max"]
-                else:
-                    lo, hi = -FALLBACK_RAW_BOUND, FALLBACK_RAW_BOUND
+
+            if bounds and "neutral_mean" in bounds and "scale" in bounds:
+                shifted = (val - bounds["neutral_mean"]) / bounds["scale"]
+                out[emo] = max(0.0, min(100.0, shifted * 100.0))
+                continue
+
+            if bounds and "min" in bounds and "max" in bounds:
+                lo, hi = bounds["min"], bounds["max"]
             else:
                 lo, hi = -FALLBACK_RAW_BOUND, FALLBACK_RAW_BOUND
             span = hi - lo

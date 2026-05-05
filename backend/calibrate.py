@@ -33,6 +33,9 @@ SEED = 42
 MAX_NEW_TOKENS = 80
 
 
+EMOTION_PROMPTS_PER_BUCKET = 8
+NEUTRAL_PROMPTS = 2
+
 PROMPTS: list[str] = [
     # joy
     "Tell me about a moment of pure happiness.",
@@ -94,6 +97,19 @@ PROMPTS: list[str] = [
 ]
 assert len(PROMPTS) == 50, f"expected 50 prompts, got {len(PROMPTS)}"
 
+# Aligns 1:1 with PROMPTS: which emotional bucket each prompt was written
+# to evoke. "neutral" is a control bucket used to pin the bar's zero.
+LABELS: list[str] = (
+    ["joy"] * EMOTION_PROMPTS_PER_BUCKET
+    + ["sadness"] * EMOTION_PROMPTS_PER_BUCKET
+    + ["anger"] * EMOTION_PROMPTS_PER_BUCKET
+    + ["fear"] * EMOTION_PROMPTS_PER_BUCKET
+    + ["surprise"] * EMOTION_PROMPTS_PER_BUCKET
+    + ["disgust"] * EMOTION_PROMPTS_PER_BUCKET
+    + ["neutral"] * NEUTRAL_PROMPTS
+)
+assert len(LABELS) == len(PROMPTS), "LABELS and PROMPTS must align"
+
 
 def main() -> int:
     torch.manual_seed(SEED)
@@ -103,61 +119,92 @@ def main() -> int:
     print(f"[calibrate] target layers: {TARGET_LAYERS}", flush=True)
     print(f"[calibrate] emotions: {EMOTIONS}\n", flush=True)
 
-    # samples[emotion][layer] = list[float]
-    samples: dict[str, dict[int, list[float]]] = {
-        emo: {L: [] for L in TARGET_LAYERS} for emo in EMOTIONS
+    # samples_by_label[bucket_label][emotion][layer] = list[float]
+    # bucket_label is "joy"/"sadness"/.../"neutral" — the emotion the
+    # prompt was written to evoke. emotion is the projection direction.
+    BUCKETS = [*EMOTIONS, "neutral"]
+    samples_by_label: dict[str, dict[str, dict[int, list[float]]]] = {
+        label: {emo: {L: [] for L in TARGET_LAYERS} for emo in EMOTIONS}
+        for label in BUCKETS
     }
 
     t_total = time.time()
     for i, prompt in enumerate(PROMPTS):
+        label = LABELS[i]
         t0 = time.time()
         n_tokens = 0
         for per_layer in engine.calibration_run(prompt, MAX_NEW_TOKENS):
             n_tokens += 1
             for L, per_emotion in per_layer.items():
                 for emo, val in per_emotion.items():
-                    samples[emo][L].append(val)
+                    samples_by_label[label][emo][L].append(val)
         dt = time.time() - t0
         print(
-            f"[{i + 1:>2}/{len(PROMPTS)}] {n_tokens:>3} tokens in {dt:5.1f}s — "
-            f"{prompt[:60]}{'...' if len(prompt) > 60 else ''}",
+            f"[{i + 1:>2}/{len(PROMPTS)}] [{label:>8}] {n_tokens:>3} tokens in {dt:5.1f}s — "
+            f"{prompt[:50]}{'...' if len(prompt) > 50 else ''}",
             flush=True,
         )
 
+    total_samples = sum(
+        len(samples_by_label[lab][emo][L])
+        for lab in BUCKETS for emo in EMOTIONS for L in TARGET_LAYERS
+    )
     print(
         f"\n[calibrate] all done in {time.time() - t_total:.1f}s "
-        f"({sum(len(v) for d in samples.values() for v in d.values())} total samples)\n",
+        f"({total_samples} total samples)\n",
         flush=True,
     )
 
-    # Compute percentiles
+    # Shift-and-scale calibration: pin the neutral baseline to 0 and a
+    # high percentile of the matching-emotional distribution to 100.
+    # Negative shifted values clip to 0 ("less aligned than neutral" is
+    # not negative emotion, it's no signal). For each (emotion, layer):
+    #   neutral_mean = mean(this_emotion's projection on NEUTRAL prompts)
+    #   emotional_p95 = p95(this_emotion's projection on its OWN prompts)
+    #   scale = max(emotional_p95 - neutral_mean, 1e-3)
+    # display = clip([0, 100], (raw - neutral_mean) / scale * 100)
     out: dict = {}
     for emo in EMOTIONS:
         out[emo] = {}
         for L in TARGET_LAYERS:
-            arr = np.array(samples[emo][L], dtype=np.float64)
-            p5 = float(np.percentile(arr, 5))
-            p95 = float(np.percentile(arr, 95))
+            neutral = np.array(
+                samples_by_label["neutral"][emo][L], dtype=np.float64,
+            )
+            emotional = np.array(
+                samples_by_label[emo][emo][L], dtype=np.float64,
+            )
+            neutral_mean = float(np.mean(neutral)) if neutral.size else 0.0
+            emotional_p95 = (
+                float(np.percentile(emotional, 95))
+                if emotional.size else neutral_mean + 1.0
+            )
+            scale = float(max(emotional_p95 - neutral_mean, 1e-3))
             out[emo][str(L)] = {
-                "min": p5,
-                "max": p95,
-                "method": "percentile_5_95",
-                "n": int(arr.size),
+                "neutral_mean": neutral_mean,
+                "scale": scale,
+                "emotional_p95": emotional_p95,
+                "method": "shift_and_scale",
+                "n_neutral": int(neutral.size),
+                "n_emotional": int(emotional.size),
             }
             print(
-                f"  {emo:<9} layer {L:>2}: p5={p5:7.3f}  p95={p95:7.3f}  "
-                f"span={p95 - p5:6.3f}  (n={arr.size})",
+                f"  {emo:<9} layer {L:>2}: "
+                f"neutral_mean={neutral_mean:8.3f}  "
+                f"emo_p95={emotional_p95:8.3f}  "
+                f"scale={scale:7.3f}  "
+                f"(n_neu={neutral.size}, n_emo={emotional.size})",
                 flush=True,
             )
 
     out["_meta"] = {
         "num_prompts": len(PROMPTS),
         "max_new_tokens": MAX_NEW_TOKENS,
-        "method": "percentile_5_95",
+        "method": "shift_and_scale",
         "seed": SEED,
         "model": "google/gemma-4-E4B-it",
         "target_layers": TARGET_LAYERS,
         "emotions": EMOTIONS,
+        "buckets": BUCKETS,
     }
 
     CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)

@@ -96,24 +96,27 @@ There are **two emotion signals on screen**, and they're calibrated very differe
 
 ### 1. Halo — projection at chosen layer
 
-**What's calibrated**: raw dot products between Gemma's residual-stream activation and the contrastive emotion vectors don't have a natural [0, 100] range. We compute the empirical distribution of those dot products under typical generation and use the 5th/95th percentile as the bar's `[0, 100]` endpoints.
+**What's calibrated**: raw dot products between Gemma's residual-stream activation and the contrastive emotion vectors don't have a natural [0, 100] range. We pin the **neutral baseline to 0** and a **high percentile of matching-emotional text to 100**, with shifted-negative values clipped to 0 ("less aligned than neutral" reads as no signal, not as a negative bar). This matches the dot's semantics — neutral text → near 0 on both indicators.
 
 **Where**: `backend/calibrate.py` → `data/vectors/calibration.json`.
 
 **Method (per-emotion, per-layer)**:
-- 50 hand-curated prompts, 8 each across 6 emotional contexts + 2 neutral (see `PROMPTS` in `backend/calibrate.py`)
+- 50 hand-curated prompts, **labeled by intended emotion**: 8 each for joy/sadness/anger/fear/surprise/disgust + 2 neutral controls (see `PROMPTS` and `LABELS` in `backend/calibrate.py`)
 - Up to 80 generated tokens per prompt (sampling at temperature 0.7, top-p 0.95, seed 42)
-- For each token, capture the raw projection score (dot product) at every target layer (13/17/21/25/28/32) for every emotion → ~3970 samples per (emotion, layer)
-- Compute p5 and p95 per (emotion, layer)
+- For each token, capture raw projection scores at every target layer (13/17/21/25/28/32) for every emotion. Bucket samples by the prompt's intended emotion.
+- For each (emotion E, layer L):
+  - `neutral_mean = mean(E-projection on tokens from neutral prompts)`
+  - `emotional_p95 = p95(E-projection on tokens from E-evoking prompts)`
+  - `scale = max(emotional_p95 − neutral_mean, ε)`
 - Total samples: 142,920 (= 6 emotions × 6 layers × ~3970)
 
-**Why per-layer**: layer magnitudes vary 10–30× across the network. Joy at layer 13 has p5/p95 of −159 to −99 (span 60); joy at layer 21 has p5/p95 of +7 to +22 (span 15). A single normalization range is impossible.
+**Why per-layer**: layer magnitudes vary 10–30× across the network. The same emotional shift might be 50 raw units at layer 13 but only 5 at layer 21. A single normalization range is impossible.
 
 **At runtime (`backend/inference.py`)**:
 ```python
-display = max(0, min(100, (raw - lo) / (hi - lo) * 100))
+display = max(0, min(100, (raw - neutral_mean) / scale * 100))
 ```
-where `(lo, hi)` is the (emotion, layer)-specific p5/p95 pair from `calibration.json`. If the file is missing, falls back to `[-5, +5]` linear (which saturates almost everything to 0 or 100, demonstrating why calibration matters).
+Neutral text → 0. Strongly emotional text → ~100. Negatives clip to 0. Backward-compatible fallback to the legacy `(p5, p95)` schema if `calibration.json` predates the shift-and-scale change.
 
 **Re-run** when vectors change or to retune to a different prompt distribution:
 ```bash
