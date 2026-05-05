@@ -74,7 +74,6 @@ class ChatHistoryItem(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
-    layer: int = Field(DEFAULT_LAYER)
     history: Optional[list[ChatHistoryItem]] = None
 
 
@@ -117,14 +116,6 @@ async def chat(request: Request, body: ChatRequest):
             status_code=503,
             content={"error": "Model not warmed up yet."},
         )
-    if body.layer not in TARGET_LAYERS:
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            status_code=400,
-            content={
-                "error": f"layer must be one of {TARGET_LAYERS}",
-            },
-        )
 
     history = (
         [{"role": h.role, "content": h.content} for h in body.history]
@@ -135,7 +126,6 @@ async def chat(request: Request, body: ChatRequest):
         try:
             async for event in _engine.generate_stream(
                 message=body.message,
-                layer=body.layer,
                 history=history,
             ):
                 yield {"data": json.dumps(event)}

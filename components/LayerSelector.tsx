@@ -1,7 +1,7 @@
 "use client";
 
-export const LAYERS = [13, 17, 21, 25, 28, 32] as const;
-export type Layer = (typeof LAYERS)[number];
+import { LAYERS, type Layer } from "@/lib/emotions";
+export { LAYERS, type Layer };
 
 const LABELS: Record<Layer, string> = {
   13: "Sensory — emotional content of recent input",

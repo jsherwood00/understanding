@@ -3,10 +3,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BASELINE,
-  BASELINE_STATE,
-  mapBackendEmotions,
+  BASELINE_RAW_STATE,
+  averageLayered,
+  makeLayeredBaseline,
+  mapLayeredBackendEmotions,
   type EmotionState,
   type EmotionValues,
+  type LayeredEmotionValues,
+  type PerTokenData,
+  type RawState,
   type Snapshot,
   type Turn,
 } from "@/lib/emotions";
@@ -18,7 +23,7 @@ import { type Layer } from "@/components/LayerSelector";
 interface BackendTokenEvent {
   type: "token";
   text: string;
-  thinking: Record<string, number>;
+  thinking: Record<string, Record<string, number>>;
   step: number;
 }
 interface BackendDoneEvent {
@@ -59,12 +64,41 @@ async function classifyOutput(text: string): Promise<EmotionValues> {
   }
 }
 
+/** Find the most recent turn whose assistantReply contains `excerpt`,
+ *  and return the per-token data for tokens overlapping that range.
+ *  Returns null if no match. */
+function tokensForExcerpt(
+  excerpt: string,
+  turns: Turn[],
+): PerTokenData[] | null {
+  for (let i = turns.length - 1; i >= 0; i--) {
+    const turn = turns[i];
+    const idx = turn.assistantReply.indexOf(excerpt);
+    if (idx < 0) continue;
+    const start = idx;
+    const end = idx + excerpt.length;
+    const matched: PerTokenData[] = [];
+    let prevEnd = 0;
+    for (const tok of turn.tokens) {
+      const tokStart = prevEnd;
+      const tokEnd = tok.charEnd;
+      // Token range [tokStart, tokEnd) overlaps selection [start, end)
+      if (tokStart < end && tokEnd > start) {
+        matched.push(tok);
+      }
+      prevEnd = tokEnd;
+    }
+    if (matched.length > 0) return matched;
+  }
+  return null;
+}
+
 export function Workspace() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
-  const [bars, setBars] = useState<EmotionState>(BASELINE_STATE);
+  const [rawBars, setRawBars] = useState<RawState>(BASELINE_RAW_STATE);
   const [error, setError] = useState<string | null>(null);
   const [selectedLayer, setSelectedLayer] = useState<Layer>(DEFAULT_LAYER);
 
@@ -84,8 +118,8 @@ export function Workspace() {
     null,
   );
 
-  // Pre-warm the distilroberta classifier so the first turn's end-of-turn
-  // classification doesn't pay the 5–15s ONNX cold-start cost.
+  // Pre-warm distilroberta so end-of-turn classification doesn't pay the
+  // ONNX cold-start.
   useEffect(() => {
     void fetch("/api/sentiment", {
       method: "POST",
@@ -94,8 +128,7 @@ export function Workspace() {
     }).catch(() => {});
   }, []);
 
-  // Selection listener for the "highlight a phrase to see its emotions"
-  // feature. Filters out tiny / non-alphabetic selections.
+  // Selection listener.
   useEffect(() => {
     function onSelectionChange() {
       const raw = window.getSelection()?.toString() ?? "";
@@ -117,8 +150,7 @@ export function Workspace() {
       document.removeEventListener("selectionchange", onSelectionChange);
   }, []);
 
-  // Debounced model-based analysis on the selection. Lexicon is the instant
-  // fallback; /api/sentiment (distilroberta) overrides on return.
+  // Debounced classifier call on the selection (the dot's value).
   useEffect(() => {
     if (!selectedExcerpt) return;
     const handle = setTimeout(async () => {
@@ -143,14 +175,41 @@ export function Workspace() {
     return () => clearTimeout(handle);
   }, [selectedExcerpt]);
 
+  // Layered thinking averaged over the tokens that produced the selected
+  // excerpt. Recomputed when the selection changes or new turns arrive.
+  const selectionLayered = useMemo<LayeredEmotionValues | null>(() => {
+    if (!selectedExcerpt) return null;
+    const matched = tokensForExcerpt(selectedExcerpt, turns);
+    return matched ? averageLayered(matched) : null;
+  }, [selectedExcerpt, turns]);
+
   const displayedBars = useMemo<EmotionState>(() => {
     if (selectedExcerpt) {
+      // Dot: the *external* classifier on the highlighted text. Lexicon
+      // is the instant fallback while distilroberta is in flight.
       const lexicon = analyzeEmotions(selectedExcerpt);
-      const final = selectionEmotions ?? lexicon;
-      return { output: final, thinking: final };
+      const dotValues = selectionEmotions ?? lexicon;
+
+      // Halo: average residual-stream projection at the selected layer
+      // over the tokens generated for this excerpt. If the excerpt isn't
+      // in any reply (e.g. user message), halo sits at baseline.
+      const haloValues = selectionLayered
+        ? selectionLayered[selectedLayer]
+        : { ...BASELINE };
+
+      return { output: dotValues, thinking: haloValues };
     }
-    return bars;
-  }, [selectedExcerpt, selectionEmotions, bars]);
+    return {
+      output: rawBars.output,
+      thinking: rawBars.thinking[selectedLayer],
+    };
+  }, [
+    selectedExcerpt,
+    selectionEmotions,
+    selectionLayered,
+    rawBars,
+    selectedLayer,
+  ]);
 
   function applyTurnView(turnIdx: number, snapIdx: number) {
     const turn = turns[turnIdx];
@@ -159,7 +218,7 @@ export function Workspace() {
       turn.snapshots[
         Math.max(0, Math.min(snapIdx, turn.snapshots.length - 1))
       ];
-    setBars({
+    setRawBars({
       output: turn.state.output,
       thinking: snap ? snap.thinking : turn.state.thinking,
     });
@@ -180,17 +239,18 @@ export function Workspace() {
     setInput("");
     setIsGenerating(true);
     setStreamingContent("");
-    // Drop the previous turn's dot — we don't have an output reading for
-    // this turn yet. Halo carries last value until first token arrives.
-    setBars((b) => ({ output: null, thinking: b.thinking }));
+    // Clear the dot — no output reading for this turn yet. Halo carries
+    // last value until the first token arrives.
+    setRawBars((b) => ({ output: null, thinking: b.thinking }));
     setError(null);
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
     let accumulatedOutput = "";
-    let thinkingEmotions: EmotionValues = bars.thinking;
+    let layeredThinking: LayeredEmotionValues = makeLayeredBaseline();
     const snapshots: Snapshot[] = [];
+    const tokenLog: PerTokenData[] = [];
     let completed = false;
     let tokenCount = 0;
 
@@ -200,7 +260,6 @@ export function Workspace() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           message: text,
-          layer: selectedLayer,
           history: priorMessages.map((m) => ({
             role: m.role,
             content: m.content,
@@ -247,8 +306,13 @@ export function Workspace() {
               accumulatedOutput += data.text;
               setStreamingContent(accumulatedOutput);
 
-              thinkingEmotions = mapBackendEmotions(data.thinking);
-              setBars({ output: null, thinking: thinkingEmotions });
+              layeredThinking = mapLayeredBackendEmotions(data.thinking);
+              setRawBars({ output: null, thinking: layeredThinking });
+
+              tokenLog.push({
+                charEnd: accumulatedOutput.length,
+                thinking: layeredThinking,
+              });
 
               if (tokenCount % SNAPSHOT_EVERY_N_TOKENS === 0) {
                 const wordCount = accumulatedOutput
@@ -257,7 +321,7 @@ export function Workspace() {
                   .filter(Boolean).length;
                 snapshots.push({
                   atWord: wordCount,
-                  thinking: thinkingEmotions,
+                  thinking: layeredThinking,
                 });
               }
               break;
@@ -266,8 +330,6 @@ export function Workspace() {
               completed = true;
               const fullText = data.fullText ?? accumulatedOutput;
 
-              // Show the message + halo immediately. Distilroberta runs in
-              // the background; the dot appears when it returns.
               setMessages((m) => [
                 ...m,
                 {
@@ -278,21 +340,18 @@ export function Workspace() {
               ]);
               setStreamingContent(null);
 
-              // Final thinking snapshot
               const wordCount = fullText.trim().split(/\s+/).filter(Boolean)
                 .length;
               const finalSnap: Snapshot = {
                 atWord: wordCount,
-                thinking: thinkingEmotions,
+                thinking: layeredThinking,
               };
               const allSnaps = [...snapshots, finalSnap];
 
-              // Block until distilroberta returns so the new turn is stored
-              // with its dot value populated.
               const outputEmotions = await classifyOutput(fullText);
-              setBars({
+              setRawBars({
                 output: outputEmotions,
-                thinking: thinkingEmotions,
+                thinking: layeredThinking,
               });
 
               const newTurn: Turn = {
@@ -300,9 +359,10 @@ export function Workspace() {
                 userMessage: text,
                 assistantReply: fullText,
                 snapshots: allSnaps,
+                tokens: tokenLog,
                 state: {
                   output: outputEmotions,
-                  thinking: thinkingEmotions,
+                  thinking: layeredThinking,
                 },
               };
               setTurns((t) => {
@@ -327,8 +387,6 @@ export function Workspace() {
         );
       }
     } finally {
-      // Stopped or errored mid-stream: still record what we have so the
-      // turn is navigable.
       if (!completed && accumulatedOutput.trim().length > 0) {
         const truncated = `${accumulatedOutput.trim()} […]`;
         setMessages((m) => [
@@ -340,20 +398,21 @@ export function Workspace() {
           },
         ]);
         const fallbackOutput = await classifyOutput(truncated);
-        setBars({
+        setRawBars({
           output: fallbackOutput,
-          thinking: thinkingEmotions,
+          thinking: layeredThinking,
         });
         const fallbackSnap: Snapshot = {
           atWord: 0,
-          thinking: thinkingEmotions,
+          thinking: layeredThinking,
         };
         const newTurn: Turn = {
           id: crypto.randomUUID(),
           userMessage: text,
           assistantReply: truncated,
           snapshots: snapshots.length > 0 ? [...snapshots] : [fallbackSnap],
-          state: { output: fallbackOutput, thinking: thinkingEmotions },
+          tokens: tokenLog,
+          state: { output: fallbackOutput, thinking: layeredThinking },
         };
         setTurns((t) => {
           const next = [...t, newTurn];
@@ -403,9 +462,7 @@ export function Workspace() {
       if (replayAbortRef.current) break;
       const snap = turn.snapshots[i];
       setSnapshotIndex(i);
-      // Dot is constant for the whole turn (post-hoc classification).
-      // Halo varies with the snapshot.
-      setBars({ output: turn.state.output, thinking: snap.thinking });
+      setRawBars({ output: turn.state.output, thinking: snap.thinking });
       await sleep(REPLAY_PER_SNAPSHOT_MS);
     }
     await sleep(REPLAY_FINAL_HOLD_MS);
@@ -425,7 +482,7 @@ export function Workspace() {
         if (replayAbortRef.current) break;
         const snap = turn.snapshots[i];
         setSnapshotIndex(i);
-        setBars({ output: turn.state.output, thinking: snap.thinking });
+        setRawBars({ output: turn.state.output, thinking: snap.thinking });
         await sleep(REPLAY_PER_SNAPSHOT_MS);
       }
       if (!replayAbortRef.current) await sleep(REPLAY_FINAL_HOLD_MS);

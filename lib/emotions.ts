@@ -29,13 +29,33 @@ export const BASELINE: EmotionValues = {
   Surprise: 0,
 };
 
+export const LAYERS = [13, 17, 21, 25, 28, 32] as const;
+export type Layer = (typeof LAYERS)[number];
+
+/** Map of layer → 6-emotion vector. Backend now ships all 6 layers per
+ *  token; the frontend stores the full layered shape and picks one to
+ *  display so layer-switching is instant. */
+export type LayeredEmotionValues = Record<Layer, EmotionValues>;
+
+export function makeLayeredBaseline(): LayeredEmotionValues {
+  const out = {} as LayeredEmotionValues;
+  for (const L of LAYERS) out[L] = { ...BASELINE };
+  return out;
+}
+
 export interface EmotionState {
-  /** Distilroberta classification of the model's full reply, computed
-   *  once at end-of-turn. Null while a turn is still streaming. */
+  /** External classifier reading of the full reply, computed once at
+   *  end-of-turn. Null while a turn is still streaming. */
   output: EmotionValues | null;
-  /** Live projection of the model's residual stream onto each emotion
-   *  vector at the chosen layer (the "internal" reaction). */
+  /** Display-ready thinking values for the *currently selected* layer. */
   thinking: EmotionValues;
+}
+
+/** Internal-only state — what the SSE stream actually populates. The
+ *  display-ready EmotionState is derived by picking one layer. */
+export interface RawState {
+  output: EmotionValues | null;
+  thinking: LayeredEmotionValues;
 }
 
 export const BASELINE_STATE: EmotionState = {
@@ -43,19 +63,36 @@ export const BASELINE_STATE: EmotionState = {
   thinking: BASELINE,
 };
 
+export const BASELINE_RAW_STATE: RawState = {
+  output: null,
+  thinking: makeLayeredBaseline(),
+};
+
 export interface Snapshot {
   atWord: number;
-  thinking: EmotionValues;
+  thinking: LayeredEmotionValues;
+}
+
+/** One generated token: where it ends in the reply (char offset) and the
+ *  full layered thinking at that step. Used for highlight-to-analyze
+ *  nearest-token mapping. */
+export interface PerTokenData {
+  charEnd: number;
+  thinking: LayeredEmotionValues;
 }
 
 export interface Turn {
   id: string;
   userMessage: string;
   assistantReply: string;
-  /** Per-chunk snapshots — both vectors at each emit. */
+  /** Per-chunk snapshots — for the replay/scrub control. */
   snapshots: Snapshot[];
-  /** Convenience: the final state at the end of the turn. */
-  state: EmotionState;
+  /** Per-token layered thinking — used to compute the halo when the user
+   *  highlights an excerpt of this turn's reply. */
+  tokens: PerTokenData[];
+  /** The final RawState at end-of-turn (output dot is null if classifier
+   *  hasn't returned yet, otherwise classified value). */
+  state: RawState;
 }
 
 const BACKEND_TO_FRONTEND: Record<string, Emotion> = {
@@ -78,6 +115,37 @@ export function mapBackendEmotions(
   for (const [k, v] of Object.entries(src)) {
     const e = BACKEND_TO_FRONTEND[k];
     if (e) out[e] = Math.max(0, Math.min(100, v));
+  }
+  return out;
+}
+
+/** Backend now ships thinking as {layer: {emotion: value}} per token. */
+export function mapLayeredBackendEmotions(
+  src: Record<string, Record<string, number>> | undefined | null,
+): LayeredEmotionValues {
+  const out = makeLayeredBaseline();
+  if (!src) return out;
+  for (const L of LAYERS) {
+    const layerSrc = src[String(L)];
+    if (layerSrc) out[L] = mapBackendEmotions(layerSrc);
+  }
+  return out;
+}
+
+/** Average a set of per-token records into one layered thinking vector.
+ *  Used when the user highlights an excerpt — averages the projection
+ *  over the tokens generated in that span. */
+export function averageLayered(
+  tokens: PerTokenData[],
+): LayeredEmotionValues {
+  const out = makeLayeredBaseline();
+  if (tokens.length === 0) return out;
+  for (const L of LAYERS) {
+    for (const e of EMOTIONS) {
+      let sum = 0;
+      for (const t of tokens) sum += t.thinking[L][e] ?? 0;
+      out[L][e] = sum / tokens.length;
+    }
   }
   return out;
 }

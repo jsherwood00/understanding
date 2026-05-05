@@ -250,12 +250,12 @@ class EmotionEngine:
     async def generate_stream(
         self,
         message: str,
-        layer: int = DEFAULT_LAYER,
         max_new_tokens: int = MAX_NEW_TOKENS,
         history: Optional[list[dict]] = None,
     ) -> AsyncGenerator[dict, None]:
-        if layer not in TARGET_LAYERS:
-            raise ValueError(f"layer must be one of {TARGET_LAYERS}, got {layer}")
+        """Stream tokens with the *full* layered thinking — all 6 layers,
+        normalized — so the frontend can switch displayed layer without
+        re-running generation."""
 
         async with self._lock:
             input_ids = self._build_prompt(message, history)
@@ -263,9 +263,10 @@ class EmotionEngine:
             generated_ids: list[int] = []
             full_text_so_far = ""
 
-            # First forward (full prompt) — populates KV cache + hook captures.
-            # Don't yield projection for this step; the prompt's own
-            # activations aren't a "thinking" event for the user.
+            # First forward (full prompt) — populates KV cache + hook
+            # captures. We don't yield a projection for this step; the
+            # prompt's own activations aren't a "thinking" event for the
+            # user.
             next_id, past_key_values = self._step(
                 input_ids, None, do_sample=True,
             )
@@ -276,33 +277,30 @@ class EmotionEngine:
 
                 generated_ids.append(next_id)
 
-                # Decode incrementally: full decode on every step gives us
-                # correct whitespace/multi-byte handling at the cost of
-                # decoding a slightly bigger sequence each iteration.
-                # Cheap enough to not matter.
+                # Decode incrementally for correct multi-byte handling.
                 decoded = self.tokenizer.decode(
                     generated_ids, skip_special_tokens=True,
                 )
                 delta = decoded[len(full_text_so_far):]
                 full_text_so_far = decoded
 
-                # Project the *just-generated* token's hidden state at the
-                # chosen layer. _captured was written by the hook during
-                # this step's forward.
-                raw = self._project(layer)
-                thinking = self._normalize(raw, layer)
+                # Project + normalize at every target layer. ~10us total
+                # extra over single-layer projection, negligible.
+                all_raw = self.project_all_layers_raw()
+                all_thinking = {
+                    str(L): self._normalize(all_raw[L], L)
+                    for L in TARGET_LAYERS
+                }
 
                 yield {
                     "type": "token",
                     "text": delta,
-                    "thinking": thinking,
+                    "thinking": all_thinking,
                     "step": step,
                 }
 
-                # Yield to the event loop so SSE can flush.
                 await asyncio.sleep(0)
 
-                # Next forward — feed only the new token, with KV cache.
                 next_input = torch.tensor(
                     [[next_id]], dtype=input_ids.dtype, device=self.device,
                 )
