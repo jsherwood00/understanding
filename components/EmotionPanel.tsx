@@ -14,9 +14,9 @@ const SHORT_LABEL: Record<Emotion, string> = {
   Joy: "JOY",
   Sadness: "SAD",
   Anger: "ANG",
-  Fear: "FEA",
-  Disgust: "DIS",
-  Surprise: "SUR",
+  Fear: "FEAR",
+  Disgust: "DISG",
+  Surprise: "SURP",
 };
 
 interface EmotionPanelProps {
