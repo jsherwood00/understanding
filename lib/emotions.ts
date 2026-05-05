@@ -30,21 +30,21 @@ export const BASELINE: EmotionValues = {
 };
 
 export interface EmotionState {
-  /** Lexicon sentiment of the model's reply text (visible output tokens). */
-  output: EmotionValues;
+  /** Distilroberta classification of the model's full reply, computed
+   *  once at end-of-turn. Null while a turn is still streaming. */
+  output: EmotionValues | null;
   /** Live projection of the model's residual stream onto each emotion
    *  vector at the chosen layer (the "internal" reaction). */
   thinking: EmotionValues;
 }
 
 export const BASELINE_STATE: EmotionState = {
-  output: BASELINE,
+  output: null,
   thinking: BASELINE,
 };
 
 export interface Snapshot {
   atWord: number;
-  output: EmotionValues;
   thinking: EmotionValues;
 }
 

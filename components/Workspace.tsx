@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  BASELINE,
   BASELINE_STATE,
   mapBackendEmotions,
   type EmotionState,
@@ -40,11 +41,23 @@ const BACKEND_URL =
 const REPLAY_PER_SNAPSHOT_MS = 220;
 const REPLAY_FINAL_HOLD_MS = 700;
 const SELECTION_MIN_CHARS = 3;
-// Record a snapshot every N generated tokens. CSS bar transitions are
-// 300ms; per-token cadence is ~26ms — snapshotting every 5 keeps the
-// recorded trajectory roughly in step with the visual transitions.
 const SNAPSHOT_EVERY_N_TOKENS = 5;
 const DEFAULT_LAYER: Layer = 21;
+
+async function classifyOutput(text: string): Promise<EmotionValues> {
+  try {
+    const res = await fetch("/api/sentiment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return { ...BASELINE };
+    const data = (await res.json()) as { emotions?: EmotionValues };
+    return data.emotions ?? { ...BASELINE };
+  } catch {
+    return { ...BASELINE };
+  }
+}
 
 export function Workspace() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -71,6 +84,16 @@ export function Workspace() {
     null,
   );
 
+  // Pre-warm the distilroberta classifier so the first turn's end-of-turn
+  // classification doesn't pay the 5–15s ONNX cold-start cost.
+  useEffect(() => {
+    void fetch("/api/sentiment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: "hello world" }),
+    }).catch(() => {});
+  }, []);
+
   // Selection listener for the "highlight a phrase to see its emotions"
   // feature. Filters out tiny / non-alphabetic selections.
   useEffect(() => {
@@ -95,7 +118,7 @@ export function Workspace() {
   }, []);
 
   // Debounced model-based analysis on the selection. Lexicon is the instant
-  // fallback; /api/sentiment (j-hartmann distilroberta) overrides on return.
+  // fallback; /api/sentiment (distilroberta) overrides on return.
   useEffect(() => {
     if (!selectedExcerpt) return;
     const handle = setTimeout(async () => {
@@ -136,11 +159,10 @@ export function Workspace() {
       turn.snapshots[
         Math.max(0, Math.min(snapIdx, turn.snapshots.length - 1))
       ];
-    if (snap) {
-      setBars({ output: snap.output, thinking: snap.thinking });
-    } else {
-      setBars(turn.state);
-    }
+    setBars({
+      output: turn.state.output,
+      thinking: snap ? snap.thinking : turn.state.thinking,
+    });
   }
 
   async function handleSubmit() {
@@ -158,14 +180,15 @@ export function Workspace() {
     setInput("");
     setIsGenerating(true);
     setStreamingContent("");
-    // Don't reset bars — keep last turn's values until first chunk arrives.
+    // Drop the previous turn's dot — we don't have an output reading for
+    // this turn yet. Halo carries last value until first token arrives.
+    setBars((b) => ({ output: null, thinking: b.thinking }));
     setError(null);
 
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
     let accumulatedOutput = "";
-    let outputEmotions: EmotionValues = bars.output;
     let thinkingEmotions: EmotionValues = bars.thinking;
     const snapshots: Snapshot[] = [];
     let completed = false;
@@ -225,8 +248,7 @@ export function Workspace() {
               setStreamingContent(accumulatedOutput);
 
               thinkingEmotions = mapBackendEmotions(data.thinking);
-              outputEmotions = analyzeEmotions(accumulatedOutput);
-              setBars({ output: outputEmotions, thinking: thinkingEmotions });
+              setBars({ output: null, thinking: thinkingEmotions });
 
               if (tokenCount % SNAPSHOT_EVERY_N_TOKENS === 0) {
                 const wordCount = accumulatedOutput
@@ -235,7 +257,6 @@ export function Workspace() {
                   .filter(Boolean).length;
                 snapshots.push({
                   atWord: wordCount,
-                  output: outputEmotions,
                   thinking: thinkingEmotions,
                 });
               }
@@ -244,7 +265,9 @@ export function Workspace() {
             case "done": {
               completed = true;
               const fullText = data.fullText ?? accumulatedOutput;
-              outputEmotions = analyzeEmotions(fullText);
+
+              // Show the message + halo immediately. Distilroberta runs in
+              // the background; the dot appears when it returns.
               setMessages((m) => [
                 ...m,
                 {
@@ -253,24 +276,30 @@ export function Workspace() {
                   content: fullText,
                 },
               ]);
+              setStreamingContent(null);
+
+              // Final thinking snapshot
+              const wordCount = fullText.trim().split(/\s+/).filter(Boolean)
+                .length;
+              const finalSnap: Snapshot = {
+                atWord: wordCount,
+                thinking: thinkingEmotions,
+              };
+              const allSnaps = [...snapshots, finalSnap];
+
+              // Block until distilroberta returns so the new turn is stored
+              // with its dot value populated.
+              const outputEmotions = await classifyOutput(fullText);
               setBars({
                 output: outputEmotions,
                 thinking: thinkingEmotions,
               });
-              setStreamingContent(null);
-              const finalSnap: Snapshot = {
-                atWord: fullText
-                  .trim()
-                  .split(/\s+/)
-                  .filter(Boolean).length,
-                output: outputEmotions,
-                thinking: thinkingEmotions,
-              };
+
               const newTurn: Turn = {
                 id: crypto.randomUUID(),
                 userMessage: text,
                 assistantReply: fullText,
-                snapshots: [...snapshots, finalSnap],
+                snapshots: allSnaps,
                 state: {
                   output: outputEmotions,
                   thinking: thinkingEmotions,
@@ -298,6 +327,8 @@ export function Workspace() {
         );
       }
     } finally {
+      // Stopped or errored mid-stream: still record what we have so the
+      // turn is navigable.
       if (!completed && accumulatedOutput.trim().length > 0) {
         const truncated = `${accumulatedOutput.trim()} […]`;
         setMessages((m) => [
@@ -308,9 +339,13 @@ export function Workspace() {
             content: truncated,
           },
         ]);
+        const fallbackOutput = await classifyOutput(truncated);
+        setBars({
+          output: fallbackOutput,
+          thinking: thinkingEmotions,
+        });
         const fallbackSnap: Snapshot = {
           atWord: 0,
-          output: outputEmotions,
           thinking: thinkingEmotions,
         };
         const newTurn: Turn = {
@@ -318,7 +353,7 @@ export function Workspace() {
           userMessage: text,
           assistantReply: truncated,
           snapshots: snapshots.length > 0 ? [...snapshots] : [fallbackSnap],
-          state: { output: outputEmotions, thinking: thinkingEmotions },
+          state: { output: fallbackOutput, thinking: thinkingEmotions },
         };
         setTurns((t) => {
           const next = [...t, newTurn];
@@ -368,7 +403,9 @@ export function Workspace() {
       if (replayAbortRef.current) break;
       const snap = turn.snapshots[i];
       setSnapshotIndex(i);
-      setBars({ output: snap.output, thinking: snap.thinking });
+      // Dot is constant for the whole turn (post-hoc classification).
+      // Halo varies with the snapshot.
+      setBars({ output: turn.state.output, thinking: snap.thinking });
       await sleep(REPLAY_PER_SNAPSHOT_MS);
     }
     await sleep(REPLAY_FINAL_HOLD_MS);
@@ -388,7 +425,7 @@ export function Workspace() {
         if (replayAbortRef.current) break;
         const snap = turn.snapshots[i];
         setSnapshotIndex(i);
-        setBars({ output: snap.output, thinking: snap.thinking });
+        setBars({ output: turn.state.output, thinking: snap.thinking });
         await sleep(REPLAY_PER_SNAPSHOT_MS);
       }
       if (!replayAbortRef.current) await sleep(REPLAY_FINAL_HOLD_MS);

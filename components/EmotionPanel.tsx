@@ -42,7 +42,9 @@ export function EmotionPanel(props: EmotionPanelProps) {
             key={emotion}
             emotion={emotion}
             thinking={props.state.thinking[emotion]}
-            output={props.state.output[emotion]}
+            output={
+              props.state.output ? props.state.output[emotion] : null
+            }
           />
         ))}
       </div>
@@ -76,11 +78,13 @@ function Bar({
 }: {
   emotion: Emotion;
   thinking: number;
-  output: number;
+  /** null while a turn is mid-stream — the dot hides until distilroberta
+   *  classifies the full reply at end-of-turn. */
+  output: number | null;
 }) {
   const color = EMOTION_COLORS[emotion];
   const thinkingPct = clamp(thinking);
-  const outputPct = clamp(output);
+  const outputPct = output !== null ? clamp(output) : 0;
   const dotColor = `color-mix(in srgb, ${color} 80%, #1a1a1a)`;
   const haloColor = `color-mix(in srgb, ${color} 70%, #faf9f6)`;
 
@@ -90,8 +94,12 @@ function Bar({
         <span className="font-medium text-ink-soft">
           {Math.round(thinking)}
         </span>
-        <span className="mx-0.5 text-ink-faint">·</span>
-        <span className="text-ink-faint">{Math.round(output)}</span>
+        {output !== null && (
+          <>
+            <span className="mx-0.5 text-ink-faint">·</span>
+            <span className="text-ink-faint">{Math.round(output)}</span>
+          </>
+        )}
       </span>
       <div className="relative my-3 w-full max-w-[44px] flex-1 rounded-sm">
         {/* Thinking — soft halo, much larger than the dot so it stays visible
@@ -108,17 +116,20 @@ function Bar({
             transition: "bottom 300ms ease-out",
           }}
         />
-        {/* Output — sharp solid dot, sits on top */}
-        <div
-          className="absolute left-1/2 -translate-x-1/2 rounded-full"
-          style={{
-            bottom: `calc(${outputPct}% - 5px)`,
-            width: "10px",
-            height: "10px",
-            backgroundColor: dotColor,
-            transition: "bottom 300ms ease-out",
-          }}
-        />
+        {/* Output — sharp solid dot, only rendered once distilroberta has
+            classified the full reply at end-of-turn. */}
+        {output !== null && (
+          <div
+            className="absolute left-1/2 -translate-x-1/2 rounded-full"
+            style={{
+              bottom: `calc(${outputPct}% - 5px)`,
+              width: "10px",
+              height: "10px",
+              backgroundColor: dotColor,
+              transition: "bottom 300ms ease-out",
+            }}
+          />
+        )}
       </div>
       <span className="smallcaps text-ink-muted">{emotion}</span>
     </div>
