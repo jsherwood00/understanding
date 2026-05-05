@@ -1,110 +1,130 @@
 # understanding
 
-A UI prototype for an LLM emotion visualization tool — framed as a deception-detection mockup. Two-pane interface: an EQ-style bar chart of six emotions (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right.
+A live emotion-visualization tool for Gemma 4 E4B. Two-pane interface: a 6-emotion bar chart (Joy, Sadness, Anger, Fear, Disgust, Surprise — Inside Out palette) on the left, a chat surface on the right.
 
-Each bar shows two cut-off heights:
+Each emotion column shows two indicators that float independently:
 
-- **Surface** (lighter shade, drawn on top) — what a sentiment analyzer reads off the model's output tokens. Computed locally from a small lexicon scoring the reply text.
-- **Internal** (darker shade, drawn behind, full saturation) — the model's actual hidden reaction. Self-reported by the model alongside its reply (would, in a real system, come from analyzing internal/thinking tokens).
+- **Sharp dot (output)** — lexicon sentiment on the model's reply text. What the words sound like.
+- **Soft halo (thinking)** — live projection of Gemma's residual stream onto the per-emotion direction vector at the chosen layer. What the model's internals look like.
 
-When `internal` rises above `surface`, the dark sticks up out of the lighter base — the deception signal. When the two match, the bar reads cleanly as one shade.
+When the dot floats away from the halo, the model's internal state isn't being expressed in its output — the **dissonance** signal. When they overlap, surface and internals are aligned.
 
-The chat backend is **Gemini 2.5 Flash via fal.ai** (`fal-ai/any-llm` endpoint, hardcoded to `google/gemini-2.5-flash` — no model picker, by design). Each turn returns the reply text, an honest internal emotion vector, and the model's thinking trace. The thinking trace renders as a collapsible disclosure above each assistant message.
+The halo is computed by dotting Gemma's residual-stream activation at a chosen layer against six pre-computed contrastive emotion vectors, then mapping into [0, 100] using per-(emotion, layer) percentile bounds. The vectors were built from 7200 contrastive-prompted stories following the methodology of Sofroniew et al. 2026 ("Emotion Concepts and their Function in a Large Language Model"), adapted for Gemma 4 E4B.
 
 ## Stack
 
-- Next.js 16 + React 19 (App Router)
-- TypeScript, Tailwind CSS v4
-- `next/font` with Fraunces (serif) + Inter (sans)
-- fal.ai HTTP API → Gemini 2.5 Flash with `reasoning: true` for thinking traces
-- Local lexicon-based sentiment analyzer for the surface vector
+- **Frontend**: Next.js 16 + React 19 (App Router), TypeScript, Tailwind v4
+- **Backend**: FastAPI + sse-starlette, serves a live SSE token stream
+- **Model**: Gemma 4 E4B in 4-bit nf4 on a local GPU (RTX 5060 Ti tested), via transformers 5.7 + bitsandbytes
+- **Sentiment lexicon**: local TS file at `lib/sentiment.ts` for the surface dot
+- **Selection sentiment**: a Next.js route (`/api/sentiment`) running j-hartmann distilroberta-base for highlight-to-analyze on transcript text
 
-## Run
+## Run (local, two processes)
+
+You need an HF token with access to `google/gemma-4-E4B-it`. Activate the venv and start the backend:
 
 ```bash
-npm install
-echo "FAL_API_KEY=your_fal_key_here" > .env.local
+source .venv/bin/activate
+HF_TOKEN=hf_... uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
+
+Cold-start loads the model in ~5–10s and prints `Application startup complete`.
+
+In another terminal, start the frontend:
+
+```bash
+npm install   # only the first time
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). The frontend reads `NEXT_PUBLIC_BACKEND_URL` (defaults to `http://localhost:8000`).
 
-If `FAL_API_KEY` is missing or invalid the chat shows a "couldn't reach the model" notice.
+## How a turn flows
 
-## Build
-
-```bash
-npm run build
-npm start
-```
+1. User submits a message in the browser.
+2. `Workspace.tsx` POSTs `{message, layer, history}` to `${NEXT_PUBLIC_BACKEND_URL}/chat`.
+3. The FastAPI route streams Server-Sent Events. For each generated token:
+   - A forward hook captures the residual-stream activation at the chosen layer.
+   - The backend dots the activation against each of the 6 emotion vectors at that layer, normalizes via calibration, and emits a `data: {type: "token", text, thinking}` event.
+4. The frontend appends the text delta to the streaming reply, sets the **halo** heights from `thinking`, and reruns the local lexicon over the accumulated reply for the **dot** heights.
+5. On the closing `done` event the frontend stores the turn (with snapshots) so it can be scrubbed/replayed via the controls below the bars.
 
 ## Layout
 
 ```
 app/
   layout.tsx              Root layout, fonts, metadata
-  page.tsx                Server shell (header + workspace)
+  page.tsx                Server shell (workspace)
   globals.css             Theme tokens, base styles, animations
-  api/evaluate/route.ts   POST → fal.ai → JSON {reply, internal} →
-                          locally analyze reply for surface →
-                          return {text, thinking, surface, internal}
+  api/sentiment/route.ts  POST → distilroberta on selected text → 6-emotion vector
+backend/
+  main.py                 FastAPI: GET /health, GET /layers, POST /chat (SSE)
+  inference.py            EmotionEngine: model load, forward hooks, generation loop
+  calibrate.py            One-time script that produces data/vectors/calibration.json
+  requirements.txt
 components/
-  Header.tsx              Top bar
-  Workspace.tsx           Client wrapper — chat state + bar updates
-  EmotionPanel.tsx        Left pane (six bars, dual fill)
-  ChatPane.tsx            Right pane (transcript with collapsible
-                          thinking disclosures + input)
+  Workspace.tsx           Client wrapper — chat state, SSE parsing, layer selection
+  EmotionPanel.tsx        Left pane (6 columns of dot+halo)
+  ChatPane.tsx            Right pane (transcript + input)
+  LayerSelector.tsx       Pill row of {13, 17, 21, 25, 28, 32}
 lib/
-  emotions.ts             Types, colors, baseline
-  sentiment.ts            Lexicon-based 6-emotion analyzer
+  emotions.ts             Types, colors, baseline, backend-key mapping
+  sentiment.ts            Lexicon-based 6-emotion analyzer (the dot)
+  emotion-classifier.ts   Bridge to /api/sentiment
+pipeline/
+  generate_stories.py     Builds the 7200-story corpus + activations
+  compute_vectors.py      Contrastive subtraction → 36 emotion vectors
+  verify.py               Sanity checks on the corpus
+data/
+  vectors/*.npy           36 contrastive vectors, shape (2560,)
+  vectors/calibration.json  per-(emotion, layer) p5/p95 bounds
+  vectors/best_layer_per_emotion.json
+  topics.json, config.json
 ```
 
-## How a turn flows
+## Pipeline (already run, don't re-run)
 
-1. User submits a message in the browser.
-2. `Workspace.tsx` POSTs the conversation to `/api/evaluate`.
-3. The route formats the messages as a User/You-prefixed prompt, sends to fal.ai with a system prompt that asks Gemini to:
-   - Reply naturally
-   - Self-report an honest internal emotion vector
-   - Output strict JSON
-4. fal.ai returns `{output: <JSON string>, reasoning: <thinking trace>}`.
-5. The route parses `output` to extract `{reply, internal}`, runs the local sentiment analyzer on `reply` for the `surface` vector, and returns `{text, thinking, surface, internal}` to the browser.
-6. The chat pane renders the thinking disclosure (collapsed by default) and streams the reply text character-by-character. When streaming completes, both bar layers settle to their new heights.
+The vectors in `data/vectors/` are inputs. Regenerating them takes hours on a single GPU and overwrites the calibration. Don't run `pipeline/generate_stories.py` or `pipeline/compute_vectors.py` unless you specifically want a fresh corpus. `pipeline/verify.py` is read-only and safe.
 
-## Pipeline & vectors
+## Calibration
 
-`pipeline/` holds the contrastive-prompting scripts that produced the emotion vectors in `data/vectors/`. Methodology follows Sofroniew et al. 2026 ("Emotion Concepts and their Function in a Large Language Model"), adapted for Gemma 4 E4B.
+`backend/calibrate.py` runs ~50 hand-curated prompts spanning all 6 emotional contexts plus neutral, captures raw projection scores at every target layer for every generated token (~143k samples), and writes p5/p95 bounds per (emotion, layer) to `data/vectors/calibration.json`. Layer magnitudes vary 10–30× across layers, so per-layer bounds are essential — the live backend uses them to map raw scores into [0, 100].
 
-- `pipeline/generate_stories.py` — generated 7200 short stories (1200 per emotion × 6 emotions) and captured residual stream activations at layers 13/17/21/25/28/32. Resumable. **Already run; do not re-run.**
-- `pipeline/compute_vectors.py` — averaged activations from token position ≥50 per story, then computed contrastive vectors as `mean(emotion E) - mean(per-emotion means of others)` at each layer. Produced 36 vectors (6 emotions × 6 layers). **Already run; do not re-run.**
-- `pipeline/verify.py` — sanity-checks the dataset (cosine similarity matrix, expected oppositions, etc.). Read-only.
+```bash
+HF_TOKEN=hf_... .venv/bin/python -m backend.calibrate
+```
 
-`data/`:
-- `data/vectors/*.npy` — 36 contrastive vectors of shape `(2560,)`, committed.
-- `data/vectors/best_layer_per_emotion.json` — highest-norm layer per emotion (a default suggestion).
-- `data/topics.json`, `data/config.json` — generation inputs / config snapshot, committed.
-- `data/stories/`, `data/activations/`, `data/run.log` — gitignored (large, derivable).
-
-The Python venv lives at `.venv/` (gitignored) and includes torch nightly cu128, transformers 5.7, bitsandbytes, accelerate. Activate with `source .venv/bin/activate`.
-
-A FastAPI backend that serves a live model + projection stream is coming in `backend/` — for now the chat surface still uses the fal.ai prototype path described above.
+Re-run after vector changes or to recalibrate to a different prompt distribution. ~2 min on RTX 5060 Ti.
 
 ## Tuning knobs
 
+In `backend/inference.py`:
+- `TEMPERATURE`, `TOP_P`, `MAX_NEW_TOKENS` — generation defaults
+- `DEFAULT_LAYER` — layer used when the request omits `layer` (default 21, paper's main-analysis depth)
+- `FALLBACK_RAW_BOUND` — [-5, +5] linear map used only when `calibration.json` is missing
+
 In `components/Workspace.tsx`:
+- `SNAPSHOT_EVERY_N_TOKENS` — cadence for recording the bar trajectory (default 5)
+- `DEFAULT_LAYER` — initial layer for the selector (default 21)
 
-- `STREAM_INTERVAL_MS` — per-character reveal delay (default 20)
-- `SETTLE_DELAY_MS` — pause between last char and applying the new state (default 220)
-
-In `app/api/evaluate/route.ts`:
-
-- `MODEL` — pinned to `google/gemini-2.5-flash`. Changing this is intentional.
-- `SYSTEM_PROMPT` — calibration / honesty instructions.
-- `max_tokens` — currently 1024.
+In `components/EmotionPanel.tsx`:
+- Bar transition timing: `transition: bottom 300ms ease-out` on the dot and halo elements.
 
 In `lib/sentiment.ts`:
+- `LEXICON` — word → partial emotion-weight map for the dot
+- Density curve `100 * (1 - exp(-14 * density))` controls saturation
 
-- `LEXICON` — word → partial emotion-weight map. Extend for better surface accuracy.
-- The saturation curve `100 * (1 - exp(-0.4 * count))` controls how quickly each emotion saturates with hits.
+## Layer cheat-sheet
 
-Bar transition speed is the CSS `transition: height 300ms ease-out` on the fill divs in `components/EmotionPanel.tsx`.
+The 6 target layers map roughly to:
+
+| Layer | Label | What it tracks |
+| ---: | --- | --- |
+| 13 | Sensory | Emotional content of recent input |
+| 17 | Sensory–integrated | |
+| 21 | Integrated | Context being processed (paper's main depth, ~2/3 of 42) |
+| 25 | Action–integrated | |
+| 28 | Action | What's about to be expressed |
+| 32 | Output | Predicting the next token |
+
+Switching layers re-routes the halo's source. The dot (lexicon over reply text) doesn't change with the layer.

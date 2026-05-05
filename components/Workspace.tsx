@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BASELINE_STATE,
+  mapBackendEmotions,
   type EmotionState,
   type EmotionValues,
   type Snapshot,
@@ -11,32 +12,48 @@ import {
 import { analyzeEmotions } from "@/lib/sentiment";
 import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
+import { type Layer } from "@/components/LayerSelector";
 
-interface SSEEvent {
-  type: "thinking_trace" | "output_word" | "snapshot" | "done";
-  text?: string;
-  output?: EmotionValues;
-  thinking?: EmotionValues;
-  fullText?: string;
-  fullThinking?: string;
-  index?: number;
-  words?: number;
+interface BackendTokenEvent {
+  type: "token";
+  text: string;
+  thinking: Record<string, number>;
+  step: number;
 }
+interface BackendDoneEvent {
+  type: "done";
+  fullText: string;
+  tokens: number;
+}
+interface BackendErrorEvent {
+  type: "error";
+  error: string;
+}
+type BackendEvent =
+  | BackendTokenEvent
+  | BackendDoneEvent
+  | BackendErrorEvent;
+
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
 const REPLAY_PER_SNAPSHOT_MS = 220;
 const REPLAY_FINAL_HOLD_MS = 700;
 const SELECTION_MIN_CHARS = 3;
+// Record a snapshot every N generated tokens. CSS bar transitions are
+// 300ms; per-token cadence is ~26ms — snapshotting every 5 keeps the
+// recorded trajectory roughly in step with the visual transitions.
+const SNAPSHOT_EVERY_N_TOKENS = 5;
+const DEFAULT_LAYER: Layer = 21;
 
 export function Workspace() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
-  const [streamingThinking, setStreamingThinking] = useState<string | null>(
-    null,
-  );
   const [bars, setBars] = useState<EmotionState>(BASELINE_STATE);
   const [error, setError] = useState<string | null>(null);
+  const [selectedLayer, setSelectedLayer] = useState<Layer>(DEFAULT_LAYER);
 
   const [turns, setTurns] = useState<Turn[]>([]);
   const [viewingIndex, setViewingIndex] = useState<number | null>(null);
@@ -54,8 +71,8 @@ export function Workspace() {
     null,
   );
 
-  // Listen for text selection. Hard pre-filter at the client too so we
-  // never even fire a request for garbage (single space, quote, emoji, etc).
+  // Selection listener for the "highlight a phrase to see its emotions"
+  // feature. Filters out tiny / non-alphabetic selections.
   useEffect(() => {
     function onSelectionChange() {
       const raw = window.getSelection()?.toString() ?? "";
@@ -77,8 +94,8 @@ export function Workspace() {
       document.removeEventListener("selectionchange", onSelectionChange);
   }, []);
 
-  // Debounced model-based analysis. Lexicon is the instant fallback;
-  // /api/sentiment (j-hartmann distilroberta) overrides on return.
+  // Debounced model-based analysis on the selection. Lexicon is the instant
+  // fallback; /api/sentiment (j-hartmann distilroberta) overrides on return.
   useEffect(() => {
     if (!selectedExcerpt) return;
     const handle = setTimeout(async () => {
@@ -135,12 +152,12 @@ export function Workspace() {
       role: "user",
       content: text,
     };
+    const priorMessages = [...messages];
     const nextMessages = [...messages, userMessage];
     setMessages(nextMessages);
     setInput("");
     setIsGenerating(true);
     setStreamingContent("");
-    setStreamingThinking(null);
     // Don't reset bars — keep last turn's values until first chunk arrives.
     setError(null);
 
@@ -148,18 +165,20 @@ export function Workspace() {
     abortControllerRef.current = controller;
 
     let accumulatedOutput = "";
-    let finalThinkingTrace: string | null = null;
     let outputEmotions: EmotionValues = bars.output;
     let thinkingEmotions: EmotionValues = bars.thinking;
     const snapshots: Snapshot[] = [];
     let completed = false;
+    let tokenCount = 0;
 
     try {
-      const res = await fetch("/api/evaluate", {
+      const res = await fetch(`${BACKEND_URL}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          messages: nextMessages.map((m) => ({
+          message: text,
+          layer: selectedLayer,
+          history: priorMessages.map((m) => ({
             role: m.role,
             content: m.content,
           })),
@@ -186,45 +205,38 @@ export function Workspace() {
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
 
-        const parts = buffer.split("\n\n");
+        // sse-starlette emits CRLF event separators; split on either.
+        const parts = buffer.split(/\r\n\r\n|\n\n/);
         buffer = parts.pop() ?? "";
 
         for (const part of parts) {
           if (!part.startsWith("data: ")) continue;
-          let data: SSEEvent;
+          let data: BackendEvent;
           try {
-            data = JSON.parse(part.slice(6)) as SSEEvent;
+            data = JSON.parse(part.slice(6)) as BackendEvent;
           } catch {
             continue;
           }
 
           switch (data.type) {
-            case "thinking_trace": {
-              const traceText = data.text ?? "";
-              finalThinkingTrace = traceText.length > 0 ? traceText : null;
-              setStreamingThinking(finalThinkingTrace);
-              break;
-            }
-            case "output_word": {
-              const word = data.text ?? "";
-              accumulatedOutput = accumulatedOutput
-                ? `${accumulatedOutput} ${word}`
-                : word;
+            case "token": {
+              tokenCount += 1;
+              accumulatedOutput += data.text;
               setStreamingContent(accumulatedOutput);
-              break;
-            }
-            case "snapshot": {
-              if (data.output && data.thinking) {
-                outputEmotions = data.output;
-                thinkingEmotions = data.thinking;
+
+              thinkingEmotions = mapBackendEmotions(data.thinking);
+              outputEmotions = analyzeEmotions(accumulatedOutput);
+              setBars({ output: outputEmotions, thinking: thinkingEmotions });
+
+              if (tokenCount % SNAPSHOT_EVERY_N_TOKENS === 0) {
+                const wordCount = accumulatedOutput
+                  .trim()
+                  .split(/\s+/)
+                  .filter(Boolean).length;
                 snapshots.push({
-                  atWord: data.words ?? 0,
-                  output: data.output,
-                  thinking: data.thinking,
-                });
-                setBars({
-                  output: data.output,
-                  thinking: data.thinking,
+                  atWord: wordCount,
+                  output: outputEmotions,
+                  thinking: thinkingEmotions,
                 });
               }
               break;
@@ -232,16 +244,13 @@ export function Workspace() {
             case "done": {
               completed = true;
               const fullText = data.fullText ?? accumulatedOutput;
-              const fullThinking = data.fullThinking ?? finalThinkingTrace;
-              if (data.output) outputEmotions = data.output;
-              if (data.thinking) thinkingEmotions = data.thinking;
+              outputEmotions = analyzeEmotions(fullText);
               setMessages((m) => [
                 ...m,
                 {
                   id: crypto.randomUUID(),
                   role: "assistant",
                   content: fullText,
-                  thinking: fullThinking || null,
                 },
               ]);
               setBars({
@@ -249,13 +258,19 @@ export function Workspace() {
                 thinking: thinkingEmotions,
               });
               setStreamingContent(null);
-              setStreamingThinking(null);
+              const finalSnap: Snapshot = {
+                atWord: fullText
+                  .trim()
+                  .split(/\s+/)
+                  .filter(Boolean).length,
+                output: outputEmotions,
+                thinking: thinkingEmotions,
+              };
               const newTurn: Turn = {
                 id: crypto.randomUUID(),
                 userMessage: text,
                 assistantReply: fullText,
-                thinkingTrace: fullThinking || null,
-                snapshots: [...snapshots],
+                snapshots: [...snapshots, finalSnap],
                 state: {
                   output: outputEmotions,
                   thinking: thinkingEmotions,
@@ -269,13 +284,18 @@ export function Workspace() {
               });
               break;
             }
+            case "error": {
+              throw new Error(data.error || "Backend error");
+            }
           }
         }
       }
     } catch (e) {
       const isAbort = e instanceof DOMException && e.name === "AbortError";
       if (!isAbort) {
-        setError(e instanceof Error ? e.message : "Something went wrong.");
+        setError(
+          e instanceof Error ? e.message : "Something went wrong.",
+        );
       }
     } finally {
       if (!completed && accumulatedOutput.trim().length > 0) {
@@ -286,7 +306,6 @@ export function Workspace() {
             id: crypto.randomUUID(),
             role: "assistant",
             content: truncated,
-            thinking: finalThinkingTrace,
           },
         ]);
         const fallbackSnap: Snapshot = {
@@ -298,7 +317,6 @@ export function Workspace() {
           id: crypto.randomUUID(),
           userMessage: text,
           assistantReply: truncated,
-          thinkingTrace: finalThinkingTrace,
           snapshots: snapshots.length > 0 ? [...snapshots] : [fallbackSnap],
           state: { output: outputEmotions, thinking: thinkingEmotions },
         };
@@ -310,7 +328,6 @@ export function Workspace() {
         });
       }
       setStreamingContent(null);
-      setStreamingThinking(null);
       setIsGenerating(false);
       abortControllerRef.current = null;
     }
@@ -409,6 +426,8 @@ export function Workspace() {
           onStopReplay={handleStopReplay}
           isReplaying={isReplaying}
           isGenerating={isGenerating}
+          selectedLayer={selectedLayer}
+          onLayerChange={setSelectedLayer}
         />
       </div>
       <div className="w-3/5">
@@ -420,7 +439,6 @@ export function Workspace() {
           onStop={handleStopGeneration}
           isGenerating={isGenerating}
           streamingText={streamingContent}
-          streamingThinking={streamingThinking}
           error={error}
           onDismissError={() => setError(null)}
         />

@@ -5,6 +5,7 @@ import {
   type EmotionState,
   type Turn,
 } from "@/lib/emotions";
+import { LayerSelector, type Layer } from "@/components/LayerSelector";
 
 interface EmotionPanelProps {
   state: EmotionState;
@@ -19,12 +20,19 @@ interface EmotionPanelProps {
   onStopReplay: () => void;
   isReplaying: boolean;
   isGenerating: boolean;
+  selectedLayer: Layer;
+  onLayerChange: (next: Layer) => void;
 }
 
 export function EmotionPanel(props: EmotionPanelProps) {
   return (
     <section className="flex h-full min-h-0 flex-col px-10 py-8">
-      <div className="flex justify-end">
+      <div className="flex items-start justify-between gap-4">
+        <LayerSelector
+          selected={props.selectedLayer}
+          onChange={props.onLayerChange}
+          disabled={props.isGenerating || props.isReplaying}
+        />
         <Legend />
       </div>
 

@@ -6,7 +6,6 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  thinking?: string | null;
 }
 
 interface ChatPaneProps {
@@ -17,7 +16,6 @@ interface ChatPaneProps {
   onStop: () => void;
   isGenerating: boolean;
   streamingText: string | null;
-  streamingThinking: string | null;
   error: string | null;
   onDismissError: () => void;
 }
@@ -30,7 +28,6 @@ export function ChatPane({
   onStop,
   isGenerating,
   streamingText,
-  streamingThinking,
   error,
   onDismissError,
 }: ChatPaneProps) {
@@ -40,7 +37,7 @@ export function ChatPane({
     const el = scrollRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, isGenerating, streamingText, streamingThinking]);
+  }, [messages, isGenerating, streamingText]);
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -70,14 +67,11 @@ export function ChatPane({
                   id: "streaming",
                   role: "assistant",
                   content: streamingText ?? "",
-                  thinking: streamingThinking,
                 }}
                 streaming
               />
             )}
-            {showTypingDots && (
-              <StreamingPlaceholder thinking={streamingThinking} />
-            )}
+            {showTypingDots && <StreamingPlaceholder />}
             {error && (
               <ErrorNotice message={error} onDismiss={onDismissError} />
             )}
@@ -144,7 +138,6 @@ function MessageBubble({
   }
   return (
     <div className="flex max-w-[78%] flex-col items-start gap-2">
-      {message.thinking && <ThinkingDisclosure text={message.thinking} />}
       <div className="text-[15px] leading-relaxed text-ink">
         {message.content}
         {streaming && <span className="stream-caret" aria-hidden />}
@@ -153,28 +146,11 @@ function MessageBubble({
   );
 }
 
-function StreamingPlaceholder({ thinking }: { thinking: string | null }) {
+function StreamingPlaceholder() {
   return (
     <div className="flex max-w-[78%] flex-col items-start gap-2">
-      {thinking && <ThinkingDisclosure text={thinking} />}
       <TypingIndicator />
     </div>
-  );
-}
-
-function ThinkingDisclosure({ text }: { text: string }) {
-  return (
-    <details className="group w-full">
-      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-[10px] tracking-[0.16em] text-ink-faint uppercase select-none hover:text-ink-muted">
-        <span className="inline-block transition-transform group-open:rotate-90">
-          ▸
-        </span>
-        thinking
-      </summary>
-      <div className="mt-2 max-w-prose border-l border-divider py-1 pl-3 text-[13px] leading-relaxed whitespace-pre-wrap text-ink-muted italic">
-        {text}
-      </div>
-    </details>
   );
 }
 
