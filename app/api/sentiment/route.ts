@@ -1,7 +1,9 @@
 import { classifyText, isClassifiable, zeros } from "@/lib/emotion-classifier";
 
 export const runtime = "nodejs";
-export const maxDuration = 30;
+// First call has to download + initialize ~1.4GB of deberta-v3-large
+// weights; subsequent calls are warm. Bumped from 30s.
+export const maxDuration = 120;
 
 export async function POST(request: Request) {
   let body: { text?: unknown };

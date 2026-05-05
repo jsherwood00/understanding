@@ -11,14 +11,14 @@ When the dot floats away from the halo, the model's internal state isn't being r
 
 The halo is computed by dotting Gemma's residual-stream activation at a chosen layer against six pre-computed contrastive emotion vectors, then mapping into [0, 100] using per-(emotion, layer) percentile bounds. The vectors were built from 7200 contrastive-prompted stories following the methodology of Sofroniew et al. 2026 ("Emotion Concepts and their Function in a Large Language Model"), adapted for Gemma 4 E4B.
 
-The dot is computed once per turn by sending the full reply text to a Next.js route that runs `SamLowe/roberta-base-go_emotions-onnx` (28-label GoEmotions, mapped to Ekman 6 via the official Demszky 2020 mapping). distilroberta is pre-trained and outputs calibrated probabilities, so this side needs no per-emotion bounds.
+The dot is computed once per turn by sending the full reply text to a Next.js route that runs **`MoritzLaurer/deberta-v3-large-zeroshot-v2.0`** in zero-shot NLI mode. Each of the 6 Ekman emotions is fed as a hypothesis (`"This text expresses joy."`, etc.) and the model returns a multi-label entailment probability per hypothesis. We use raw probability × 100 directly. No GoEmotions taxonomy mapping, no calibration. Zero-shot NLI handles narrative/literary text well and doesn't suffer the disgust→fear confusion that the GoEmotions classifier had.
 
 ## Stack
 
 - **Frontend**: Next.js 16 + React 19 (App Router), TypeScript, Tailwind v4
 - **FastAPI backend**: serves a live SSE token stream of Gemma's residual-stream projections (`backend/`)
 - **Gemma 4 E4B** in 4-bit nf4 on a local GPU (RTX 5060 Ti tested), via transformers 5.7 + bitsandbytes
-- **distilroberta classifier** (`SamLowe/roberta-base-go_emotions-onnx`) for the post-hoc surface dot AND the highlight-to-analyze tooltip, hosted in a Next.js route at `/api/sentiment`
+- **deberta-v3-large zero-shot classifier** (`MoritzLaurer/deberta-v3-large-zeroshot-v2.0`) for the post-hoc surface dot AND the highlight-to-analyze tooltip, hosted in a Next.js route at `/api/sentiment`. NLI-style: each emotion is independently scored as the entailment probability of "This text expresses {emotion}."
 - **Lexicon** (`lib/sentiment.ts`) — fast instant fallback for the highlight-to-analyze feature only; not used during streaming.
 
 ## Run (local, two processes)
@@ -121,17 +121,21 @@ HF_TOKEN=hf_... .venv/bin/python -m backend.calibrate
 ```
 ~2 min on RTX 5060 Ti.
 
-### 2. Dot — distilroberta classification of the full reply
+### 2. Dot — zero-shot NLI classification of the full reply
 
-**What's calibrated**: nothing. distilroberta (`SamLowe/roberta-base-go_emotions-onnx`) is pre-trained on GoEmotions and outputs per-label probabilities in [0, 1]. We sum probabilities for the GoEmotions labels that map to each Ekman bucket (Demszky 2020 mapping, encoded in `lib/emotion-classifier.ts`), clamp to [0, 1], scale ×100, round to integer. No empirical bounds are needed — the model's outputs are already the calibrated quantities.
+**What's calibrated**: nothing. `MoritzLaurer/deberta-v3-large-zeroshot-v2.0` is pre-trained for NLI and the Ekman emotion labels are passed at inference time. The pipeline forms one hypothesis per label — "This text expresses joy.", "This text expresses sadness.", etc. — and returns the entailment probability for each, independently (`multi_label: true`). We multiply by 100 and round. That's the bar value.
+
+**Why no calibration**: zero-shot NLI gives clean per-label probabilities that already span [0, 100] meaningfully. Applying percentile normalization on top would amplify noise. We tried percentile calibration with the previous classifier and it had the typical narrative-text problem; switching to zero-shot NLI fixed both the calibration question and the disgust/fear confusion at once.
 
 **Where**: classifier loads in the Next.js server runtime via `@huggingface/transformers`, called from `app/api/sentiment/route.ts`, source in `lib/emotion-classifier.ts`.
 
 **When**: only at the **end of each turn** (the dot is hidden during streaming), and on **selection** when the user highlights an excerpt in the chat (250ms debounce).
 
-**Why no per-token classification during streaming**: distilroberta is too slow per token (~50–200ms warm) and the lexicon-density approach we tried first was misleading: the halo's projection sees the entire conversation context (residual stream is cumulative), but a per-token lexicon over the reply alone sees only what's been emitted so far. That asymmetry made the dissonance gap look bigger than it is. Running distilroberta once on the full reply is symmetric (full reply text vs. full reply context) and uses a real model instead of a 600-word lexicon.
+**Why not per-token during streaming**: too slow (~150–500ms warm per call for deberta-large) and structurally awkward — see the "How a turn flows" section above for the asymmetry argument that drove the post-hoc design.
 
-**Pre-warm**: a single dummy `/api/sentiment` POST fires on `Workspace.tsx` mount so the first turn doesn't eat the 5–15s ONNX cold-start when distilroberta loads.
+**Pre-warm**: a single dummy `/api/sentiment` POST fires on `Workspace.tsx` mount so the first turn doesn't eat the ~25s cold-start when deberta-v3-large initializes (~1.4GB model).
+
+**Hypothesis template tuning**: `"This text expresses {}."` is the current template (in `lib/emotion-classifier.ts` as `HYPOTHESIS_TEMPLATE`). Other phrasings ("The author is feeling {}.", "The speaker shows {}.") may give different distributions; this one tested cleanly on both direct emotional language and narrative prose.
 
 ## Tuning knobs
 
