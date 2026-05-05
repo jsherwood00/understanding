@@ -7,6 +7,18 @@ import {
 } from "@/lib/emotions";
 import { LayerSelector, type Layer } from "@/components/LayerSelector";
 
+// Short 3-letter labels under each bar so they always fit — full names
+// like SADNESS / DISGUST / SURPRISE overflow the column at any reasonable
+// panel width.
+const SHORT_LABEL: Record<Emotion, string> = {
+  Joy: "JOY",
+  Sadness: "SAD",
+  Anger: "ANG",
+  Fear: "FEA",
+  Disgust: "DIS",
+  Surprise: "SUR",
+};
+
 interface EmotionPanelProps {
   state: EmotionState;
   turns: Turn[];
@@ -27,13 +39,15 @@ interface EmotionPanelProps {
 export function EmotionPanel(props: EmotionPanelProps) {
   return (
     <section className="flex h-full min-h-0 flex-col px-10 py-8">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-3">
         <LayerSelector
           selected={props.selectedLayer}
           onChange={props.onLayerChange}
           disabled={props.isGenerating || props.isReplaying}
         />
-        <Legend />
+        <div className="flex justify-end">
+          <Legend />
+        </div>
       </div>
 
       <div className="mt-8 flex min-h-0 flex-1 items-stretch gap-3">
@@ -131,8 +145,11 @@ function Bar({
           />
         )}
       </div>
-      <span className="block w-full truncate text-center text-[9px] font-medium tracking-[0.06em] text-ink-muted uppercase">
-        {emotion}
+      <span
+        className="smallcaps block w-full text-center text-ink-muted"
+        title={emotion}
+      >
+        {SHORT_LABEL[emotion]}
       </span>
     </div>
   );
