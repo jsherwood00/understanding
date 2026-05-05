@@ -71,6 +71,24 @@ lib/
 5. The route parses `output` to extract `{reply, internal}`, runs the local sentiment analyzer on `reply` for the `surface` vector, and returns `{text, thinking, surface, internal}` to the browser.
 6. The chat pane renders the thinking disclosure (collapsed by default) and streams the reply text character-by-character. When streaming completes, both bar layers settle to their new heights.
 
+## Pipeline & vectors
+
+`pipeline/` holds the contrastive-prompting scripts that produced the emotion vectors in `data/vectors/`. Methodology follows Sofroniew et al. 2026 ("Emotion Concepts and their Function in a Large Language Model"), adapted for Gemma 4 E4B.
+
+- `pipeline/generate_stories.py` — generated 7200 short stories (1200 per emotion × 6 emotions) and captured residual stream activations at layers 13/17/21/25/28/32. Resumable. **Already run; do not re-run.**
+- `pipeline/compute_vectors.py` — averaged activations from token position ≥50 per story, then computed contrastive vectors as `mean(emotion E) - mean(per-emotion means of others)` at each layer. Produced 36 vectors (6 emotions × 6 layers). **Already run; do not re-run.**
+- `pipeline/verify.py` — sanity-checks the dataset (cosine similarity matrix, expected oppositions, etc.). Read-only.
+
+`data/`:
+- `data/vectors/*.npy` — 36 contrastive vectors of shape `(2560,)`, committed.
+- `data/vectors/best_layer_per_emotion.json` — highest-norm layer per emotion (a default suggestion).
+- `data/topics.json`, `data/config.json` — generation inputs / config snapshot, committed.
+- `data/stories/`, `data/activations/`, `data/run.log` — gitignored (large, derivable).
+
+The Python venv lives at `.venv/` (gitignored) and includes torch nightly cu128, transformers 5.7, bitsandbytes, accelerate. Activate with `source .venv/bin/activate`.
+
+A FastAPI backend that serves a live model + projection stream is coming in `backend/` — for now the chat surface still uses the fal.ai prototype path described above.
+
 ## Tuning knobs
 
 In `components/Workspace.tsx`:

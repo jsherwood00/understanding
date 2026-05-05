@@ -45,3 +45,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# python
+.venv/
+__pycache__/
+*.pyc
+
+# pipeline outputs (vectors are committed; raw stories+activations are not)
+/data/stories/
+/data/activations/
+/data/run.log

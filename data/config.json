@@ -1,0 +1,26 @@
+{
+  "model_id": "google/gemma-4-E4B-it",
+  "emotions": [
+    "joy",
+    "sadness",
+    "anger",
+    "fear",
+    "surprise",
+    "disgust"
+  ],
+  "num_topics": 100,
+  "stories_per_topic": 12,
+  "target_layers": [
+    13,
+    17,
+    21,
+    25,
+    28,
+    32
+  ],
+  "max_new_tokens": 280,
+  "min_token_position": 50,
+  "min_story_tokens": 80,
+  "temperature": 0.9,
+  "top_p": 0.95
+}
