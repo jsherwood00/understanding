@@ -24,8 +24,8 @@ export function LayerSelector({
   disabled = false,
 }: LayerSelectorProps) {
   return (
-    <div className="flex flex-col gap-1">
-      <div className="flex items-center gap-1">
+    <div className="flex min-w-0 flex-col gap-1">
+      <div className="flex shrink-0 items-center gap-1 whitespace-nowrap">
         <span className="mr-1 text-[10px] tracking-[0.16em] text-ink-faint uppercase">
           layer
         </span>
@@ -53,7 +53,7 @@ export function LayerSelector({
         })}
       </div>
       <span
-        className="text-[10px] text-ink-faint italic"
+        className="truncate text-[10px] text-ink-faint italic"
         aria-live="polite"
       >
         {LABELS[selected]}

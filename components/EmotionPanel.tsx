@@ -131,21 +131,23 @@ function Bar({
           />
         )}
       </div>
-      <span className="smallcaps text-ink-muted">{emotion}</span>
+      <span className="block w-full truncate text-center text-[9px] font-medium tracking-[0.06em] text-ink-muted uppercase">
+        {emotion}
+      </span>
     </div>
   );
 }
 
 function Legend() {
   return (
-    <div className="flex items-center gap-3 text-[10px] tracking-[0.12em] text-ink-faint uppercase">
+    <div className="flex shrink-0 items-center gap-3 text-[10px] tracking-[0.12em] whitespace-nowrap text-ink-faint uppercase">
       <span className="flex items-center gap-1.5">
-        <span className="h-2.5 w-2.5 rounded-full bg-ink-soft" />
+        <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-ink-soft" />
         output
       </span>
       <span className="flex items-center gap-1.5">
         <span
-          className="h-3 w-3 rounded-full"
+          className="h-3 w-3 shrink-0 rounded-full"
           style={{
             background:
               "radial-gradient(circle, #4a4a4a 0%, #4a4a4a55 40%, transparent 70%)",
