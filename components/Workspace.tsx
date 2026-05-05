@@ -340,18 +340,29 @@ export function Workspace() {
               ]);
               setStreamingContent(null);
 
+              // Final halo = average projection across every token in
+              // this turn, not the last token's value. The last-token
+              // reading is noisy / point-in-time; the average is a
+              // holistic measure of the model's internal state across
+              // generating the whole response.
+              const finalThinking = tokenLog.length > 0
+                ? averageLayered(tokenLog)
+                : layeredThinking;
+
+              setRawBars({ output: null, thinking: finalThinking });
+
               const wordCount = fullText.trim().split(/\s+/).filter(Boolean)
                 .length;
               const finalSnap: Snapshot = {
                 atWord: wordCount,
-                thinking: layeredThinking,
+                thinking: finalThinking,
               };
               const allSnaps = [...snapshots, finalSnap];
 
               const outputEmotions = await classifyOutput(fullText);
               setRawBars({
                 output: outputEmotions,
-                thinking: layeredThinking,
+                thinking: finalThinking,
               });
 
               const newTurn: Turn = {
@@ -362,7 +373,7 @@ export function Workspace() {
                 tokens: tokenLog,
                 state: {
                   output: outputEmotions,
-                  thinking: layeredThinking,
+                  thinking: finalThinking,
                 },
               };
               setTurns((t) => {
@@ -398,13 +409,17 @@ export function Workspace() {
           },
         ]);
         const fallbackOutput = await classifyOutput(truncated);
+        // Same averaging behavior on the abort/error fallback path.
+        const fallbackThinking = tokenLog.length > 0
+          ? averageLayered(tokenLog)
+          : layeredThinking;
         setRawBars({
           output: fallbackOutput,
-          thinking: layeredThinking,
+          thinking: fallbackThinking,
         });
         const fallbackSnap: Snapshot = {
           atWord: 0,
-          thinking: layeredThinking,
+          thinking: fallbackThinking,
         };
         const newTurn: Turn = {
           id: crypto.randomUUID(),
@@ -412,7 +427,7 @@ export function Workspace() {
           assistantReply: truncated,
           snapshots: snapshots.length > 0 ? [...snapshots] : [fallbackSnap],
           tokens: tokenLog,
-          state: { output: fallbackOutput, thinking: layeredThinking },
+          state: { output: fallbackOutput, thinking: fallbackThinking },
         };
         setTurns((t) => {
           const next = [...t, newTurn];
