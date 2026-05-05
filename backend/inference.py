@@ -121,9 +121,10 @@ class EmotionEngine:
                 flush=True,
             )
         else:
+            n_emotions = sum(1 for k in self.calibration if not k.startswith("_"))
             print(
-                f"[engine] loaded calibration for "
-                f"{len(self.calibration)} emotions",
+                f"[engine] loaded calibration for {n_emotions} emotions × "
+                f"{len(TARGET_LAYERS)} layers",
                 flush=True,
             )
 
@@ -161,6 +162,28 @@ class EmotionEngine:
         vecs = self.vectors[layer]                    # (6, 2560)
         scores = (vecs @ last).cpu().numpy()          # (6,)
         return {emo: float(scores[i]) for i, emo in enumerate(EMOTIONS)}
+
+    @torch.no_grad()
+    def project_all_layers_raw(self) -> dict[int, dict[str, float]]:
+        """Raw (un-normalized) projection scores at every target layer for
+        the latest captured token. Used by the calibration script."""
+        return {L: self._project(L) for L in TARGET_LAYERS}
+
+    @torch.no_grad()
+    def calibration_run(self, message: str, max_new_tokens: int = 80):
+        """Sync generator: yields {layer: {emotion: raw_score}} per
+        generated token. Mirrors generate_stream's inner loop without
+        async / SSE / normalize. Used by calibrate.py."""
+        input_ids = self._build_prompt(message)
+        next_id, past_kv = self._step(input_ids, None, do_sample=True)
+        for _ in range(max_new_tokens):
+            if next_id == self.eos_token_id:
+                break
+            yield self.project_all_layers_raw()
+            next_input = torch.tensor(
+                [[next_id]], dtype=input_ids.dtype, device=self.device,
+            )
+            next_id, past_kv = self._step(next_input, past_kv, do_sample=True)
 
     def _normalize(self, raw: dict[str, float], layer: int) -> dict[str, float]:
         """Map raw projection scores to display range [0, 100] using
