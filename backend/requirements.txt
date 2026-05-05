@@ -1,0 +1,7 @@
+# torch nightly cu128, transformers, bitsandbytes, accelerate are already
+# installed in .venv (see top-level README). These are the additional
+# packages the backend needs on top of the ML stack.
+fastapi>=0.115
+uvicorn[standard]>=0.32
+sse-starlette>=2.1
+slowapi>=0.1.9
