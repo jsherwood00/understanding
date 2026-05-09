@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useRef, type FormEvent } from "react";
+import { memo, useEffect, useRef, type FormEvent } from "react";
+import ReactMarkdown from "react-markdown";
 
 export interface ChatMessage {
   id: string;
@@ -120,7 +121,11 @@ export function ChatPane({
   );
 }
 
-function MessageBubble({
+// Memoized: every parent re-render (e.g. when the user highlights text and
+// `selectedExcerpt` changes upstream) would otherwise rebuild the bubble's
+// DOM via react-markdown, which invalidates the browser's selection range
+// and visually drops the highlight as soon as the mouse releases.
+const MessageBubble = memo(function MessageBubble({
   message,
   streaming = false,
 }: {
@@ -139,12 +144,66 @@ function MessageBubble({
   return (
     <div className="flex max-w-[78%] flex-col items-start gap-2">
       <div className="text-[15px] leading-relaxed text-ink">
-        {message.content}
+        <ReactMarkdown
+          components={{
+            p: ({ children }) => (
+              <p className="mb-3 last:mb-0">{children}</p>
+            ),
+            h1: ({ children }) => (
+              <h1 className="mb-2 mt-4 text-lg font-semibold text-ink first:mt-0">
+                {children}
+              </h1>
+            ),
+            h2: ({ children }) => (
+              <h2 className="mb-2 mt-4 text-base font-semibold text-ink first:mt-0">
+                {children}
+              </h2>
+            ),
+            h3: ({ children }) => (
+              <h3 className="mb-2 mt-3 text-[15px] font-semibold text-ink first:mt-0">
+                {children}
+              </h3>
+            ),
+            ul: ({ children }) => (
+              <ul className="mb-3 ml-5 list-disc space-y-1 last:mb-0">
+                {children}
+              </ul>
+            ),
+            ol: ({ children }) => (
+              <ol className="mb-3 ml-5 list-decimal space-y-1 last:mb-0">
+                {children}
+              </ol>
+            ),
+            li: ({ children }) => <li className="pl-1">{children}</li>,
+            strong: ({ children }) => (
+              <strong className="font-semibold text-ink">{children}</strong>
+            ),
+            em: ({ children }) => <em className="italic">{children}</em>,
+            code: ({ children }) => (
+              <code className="rounded bg-tint px-1 py-0.5 font-mono text-[13px]">
+                {children}
+              </code>
+            ),
+            pre: ({ children }) => (
+              <pre className="mb-3 overflow-x-auto rounded-md bg-tint p-3 font-mono text-[13px] last:mb-0">
+                {children}
+              </pre>
+            ),
+            hr: () => <hr className="my-3 border-divider" />,
+            blockquote: ({ children }) => (
+              <blockquote className="mb-3 border-l-2 border-divider pl-3 text-ink-soft last:mb-0">
+                {children}
+              </blockquote>
+            ),
+          }}
+        >
+          {message.content}
+        </ReactMarkdown>
         {streaming && <span className="stream-caret" aria-hidden />}
       </div>
     </div>
   );
-}
+});
 
 function StreamingPlaceholder() {
   return (

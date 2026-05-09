@@ -39,9 +39,15 @@ DEFAULT_LAYER = 21  # paper's main-analysis depth (~2/3 of 42 layers)
 
 # Generation defaults — match the pipeline (which produced the vectors) for
 # distributional parity, just shorter to keep responses snappy.
-MAX_NEW_TOKENS = 280
+MAX_NEW_TOKENS = 2048
 TEMPERATURE = 0.7
 TOP_P = 0.95
+
+# Soft cap on streamed tokens/sec. We never delay a slow token, but if the
+# model produces tokens faster than this we sleep the difference so the
+# frontend halo has time to render each step legibly.
+MAX_TOKENS_PER_SEC = 40.0
+MIN_TOKEN_INTERVAL_S = 1.0 / MAX_TOKENS_PER_SEC
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 VECTORS_DIR = DATA_DIR / "vectors"
@@ -110,7 +116,25 @@ class EmotionEngine:
 
         # Verified path for Gemma 4 E4B in transformers 5.7.
         self.layers = self.model.model.language_model.layers
-        self.eos_token_id = self.tokenizer.eos_token_id
+
+        # Gemma chat ends a turn with <end_of_turn>, not <eos>. Stopping only
+        # on tokenizer.eos_token_id lets the model run past its real turn-end
+        # and degenerate into repetition. Collect every stop token the model
+        # might emit: tokenizer eos, generation_config eos (often a list),
+        # and the explicit <end_of_turn>.
+        stop_ids: set[int] = set()
+        if self.tokenizer.eos_token_id is not None:
+            stop_ids.add(int(self.tokenizer.eos_token_id))
+        gen_eos = getattr(self.model.generation_config, "eos_token_id", None)
+        if isinstance(gen_eos, int):
+            stop_ids.add(gen_eos)
+        elif isinstance(gen_eos, (list, tuple)):
+            stop_ids.update(int(x) for x in gen_eos)
+        eot_id = self.tokenizer.convert_tokens_to_ids("<end_of_turn>")
+        if isinstance(eot_id, int) and eot_id != self.tokenizer.unk_token_id:
+            stop_ids.add(eot_id)
+        self.stop_token_ids = stop_ids
+        print(f"[engine] stop tokens: {sorted(stop_ids)}", flush=True)
 
         self.vectors = load_vectors(self.device)  # {layer: (6, 2560) tensor}
         self.calibration = load_calibration()
@@ -177,7 +201,7 @@ class EmotionEngine:
         input_ids = self._build_prompt(message)
         next_id, past_kv = self._step(input_ids, None, do_sample=True)
         for _ in range(max_new_tokens):
-            if next_id == self.eos_token_id:
+            if next_id in self.stop_token_ids:
                 break
             yield self.project_all_layers_raw()
             next_input = torch.tensor(
@@ -276,6 +300,7 @@ class EmotionEngine:
             past_key_values = None
             generated_ids: list[int] = []
             full_text_so_far = ""
+            last_yield_at: Optional[float] = None
 
             # First forward (full prompt) — populates KV cache + hook
             # captures. We don't yield a projection for this step; the
@@ -286,7 +311,7 @@ class EmotionEngine:
             )
 
             for step in range(max_new_tokens):
-                if next_id == self.eos_token_id:
+                if next_id in self.stop_token_ids:
                     break
 
                 generated_ids.append(next_id)
@@ -305,6 +330,13 @@ class EmotionEngine:
                     str(L): self._normalize(all_raw[L], L)
                     for L in TARGET_LAYERS
                 }
+
+                if last_yield_at is not None:
+                    target = last_yield_at + MIN_TOKEN_INTERVAL_S
+                    now = time.monotonic()
+                    if now < target:
+                        await asyncio.sleep(target - now)
+                last_yield_at = time.monotonic()
 
                 yield {
                     "type": "token",

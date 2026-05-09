@@ -24,40 +24,32 @@ export function LayerSelector({
   disabled = false,
 }: LayerSelectorProps) {
   return (
-    <div className="flex min-w-0 flex-col gap-1">
-      <div className="flex shrink-0 items-center gap-1 whitespace-nowrap">
-        <span className="mr-1 text-[10px] tracking-[0.16em] text-ink-faint uppercase">
-          layer
-        </span>
-        {LAYERS.map((L) => {
-          const active = L === selected;
-          return (
-            <button
-              key={L}
-              type="button"
-              onClick={() => onChange(L)}
-              disabled={disabled}
-              aria-pressed={active}
-              title={LABELS[L]}
-              className={
-                "tabular px-1.5 py-0.5 text-[11px] transition-colors " +
-                "disabled:cursor-not-allowed disabled:opacity-40 " +
-                (active
-                  ? "rounded border border-ink/40 text-ink"
-                  : "rounded border border-transparent text-ink-faint hover:text-ink-soft")
-              }
-            >
-              {L}
-            </button>
-          );
-        })}
-      </div>
-      <span
-        className="truncate text-[10px] text-ink-faint italic"
-        aria-live="polite"
-      >
-        {LABELS[selected]}
+    <div className="flex min-w-0 shrink-0 items-center gap-1 whitespace-nowrap">
+      <span className="mr-1 text-[10px] tracking-[0.16em] text-ink-faint uppercase">
+        layer
       </span>
+      {LAYERS.map((L) => {
+        const active = L === selected;
+        return (
+          <button
+            key={L}
+            type="button"
+            onClick={() => onChange(L)}
+            disabled={disabled}
+            aria-pressed={active}
+            title={LABELS[L]}
+            className={
+              "tabular px-1.5 py-0.5 text-[11px] transition-colors " +
+              "disabled:cursor-not-allowed disabled:opacity-40 " +
+              (active
+                ? "rounded border border-ink/40 text-ink"
+                : "rounded border border-transparent text-ink-faint hover:text-ink-soft")
+            }
+          >
+            {L}
+          </button>
+        );
+      })}
     </div>
   );
 }

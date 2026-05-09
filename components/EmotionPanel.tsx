@@ -51,6 +51,7 @@ export function EmotionPanel(props: EmotionPanelProps) {
       </div>
 
       <div className="mt-8 flex min-h-0 flex-1 items-stretch gap-3">
+        <YScale />
         {EMOTIONS.map((emotion) => (
           <Bar
             key={emotion}
@@ -59,6 +60,7 @@ export function EmotionPanel(props: EmotionPanelProps) {
             output={
               props.state.output ? props.state.output[emotion] : null
             }
+            showNumbers={!props.isGenerating}
           />
         ))}
       </div>
@@ -89,12 +91,17 @@ function Bar({
   emotion,
   thinking,
   output,
+  showNumbers,
 }: {
   emotion: Emotion;
   thinking: number;
   /** null while a turn is mid-stream — the dot hides until distilroberta
    *  classifies the full reply at end-of-turn. */
   output: number | null;
+  /** When false (during streaming), the readout numbers are hidden so the
+   *  user watches the halos move; numbers come back at rest, when the
+   *  scrubber is the way to inspect the trace. */
+  showNumbers: boolean;
 }) {
   const color = EMOTION_COLORS[emotion];
   const thinkingPct = clamp(thinking);
@@ -104,17 +111,6 @@ function Bar({
 
   return (
     <div className="flex min-w-0 flex-1 flex-col items-center">
-      <span className="tabular text-xs leading-tight">
-        <span className="font-medium text-ink-soft">
-          {Math.round(thinking)}
-        </span>
-        {output !== null && (
-          <>
-            <span className="mx-0.5 text-ink-faint">·</span>
-            <span className="text-ink-faint">{Math.round(output)}</span>
-          </>
-        )}
-      </span>
       <div className="relative my-3 w-full max-w-[44px] flex-1 rounded-sm">
         {/* Thinking — soft halo, much larger than the dot so it stays visible
             even when values overlap. Solid lighter color, no blur. */}
@@ -130,19 +126,48 @@ function Bar({
             transition: "bottom 300ms ease-out",
           }}
         />
+        {/* Thinking value — centered on the halo, on top of it. Hidden
+            during streaming; appears when the scrubber is in play. */}
+        {showNumbers && (
+          <span
+            className="tabular absolute left-1/2 -translate-x-1/2 text-[11px] font-semibold text-ink"
+            style={{
+              bottom: `calc(${thinkingPct}% - 7px)`,
+              transition: "bottom 300ms ease-out",
+            }}
+          >
+            {Math.round(thinking)}
+          </span>
+        )}
         {/* Output — sharp solid dot, only rendered once distilroberta has
             classified the full reply at end-of-turn. */}
         {output !== null && (
-          <div
-            className="absolute left-1/2 -translate-x-1/2 rounded-full"
-            style={{
-              bottom: `calc(${outputPct}% - 5px)`,
-              width: "10px",
-              height: "10px",
-              backgroundColor: dotColor,
-              transition: "bottom 300ms ease-out",
-            }}
-          />
+          <>
+            <div
+              className="absolute left-1/2 -translate-x-1/2 rounded-full"
+              style={{
+                bottom: `calc(${outputPct}% - 8px)`,
+                width: "16px",
+                height: "16px",
+                backgroundColor: dotColor,
+                transition: "bottom 300ms ease-out",
+              }}
+            />
+            {/* Output value — small label just to the right of the dot.
+                Hidden during streaming alongside the thinking label. */}
+            {showNumbers && (
+              <span
+                className="tabular absolute text-[12px] text-ink-soft"
+                style={{
+                  bottom: `calc(${outputPct}% - 7px)`,
+                  left: "calc(50% + 12px)",
+                  transition: "bottom 300ms ease-out",
+                }}
+              >
+                {Math.round(output)}
+              </span>
+            )}
+          </>
         )}
       </div>
       <span
@@ -155,26 +180,97 @@ function Bar({
   );
 }
 
-function Legend() {
+
+// Static y-scale to the left of the bars. Major ticks at 25/50/75/100
+// with a small numeric label; minor ticks every 5 in between, unlabeled.
+// The scale is purely a visual reference — it doesn't depend on state.
+function YScale() {
+  const MAJORS = [25, 50, 75, 100];
+  const MINORS: number[] = [];
+  for (let v = 5; v <= 100; v += 5) {
+    if (!MAJORS.includes(v)) MINORS.push(v);
+  }
   return (
-    <div className="flex shrink-0 items-center gap-3 text-[10px] tracking-[0.12em] whitespace-nowrap text-ink-faint uppercase">
-      <span className="flex items-center gap-1.5">
-        <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-ink-soft" />
-        output
-      </span>
-      <span className="flex items-center gap-1.5">
-        <span
-          className="h-3 w-3 shrink-0 rounded-full"
-          style={{
-            background:
-              "radial-gradient(circle, #4a4a4a 0%, #4a4a4a55 40%, transparent 70%)",
-            filter: "blur(1px)",
-          }}
-        />
-        thinking
+    <div className="flex w-7 shrink-0 flex-col">
+      <div className="relative my-3 flex-1">
+        {MINORS.map((v) => (
+          <div
+            key={`min-${v}`}
+            className="absolute right-0 bg-ink-faint/25"
+            style={{
+              bottom: `${v}%`,
+              width: "3px",
+              height: "1px",
+            }}
+          />
+        ))}
+        {MAJORS.map((v) => (
+          <div
+            key={`maj-${v}`}
+            className="absolute right-0 flex translate-y-1/2 items-center gap-1"
+            style={{ bottom: `${v}%` }}
+          >
+            <span className="tabular text-[9px] text-ink-faint">{v}</span>
+            <span
+              className="block bg-ink-faint/50"
+              style={{ width: "5px", height: "1px" }}
+            />
+          </div>
+        ))}
+      </div>
+      {/* Bottom spacer matches the bars' emotion-label row so the
+          chart-area top/bottom of the scale lines up with the bars'. */}
+      <span className="smallcaps block w-full text-center" aria-hidden>
+        &nbsp;
       </span>
     </div>
   );
+}
+
+function Legend() {
+  return (
+    <div className="flex shrink-0 items-center gap-4 text-[13px] whitespace-nowrap text-ink-soft">
+      <span className="flex items-center gap-2">
+        <span className="h-3.5 w-3.5 shrink-0 rounded-full bg-ink-soft" />
+        Output text
+      </span>
+      <span className="flex items-center gap-2">
+        <span
+          className="h-5 w-5 shrink-0 rounded-full"
+          style={{
+            background:
+              "radial-gradient(circle, #4a4a4a 0%, #4a4a4a55 40%, transparent 70%)",
+            filter: "blur(1.5px)",
+          }}
+        />
+        Internal state
+      </span>
+    </div>
+  );
+}
+
+// Snapshots are pushed every N tokens during generation. Must match
+// SNAPSHOT_EVERY_N_TOKENS in Workspace.tsx — the relationship is:
+// snapshot index k corresponds to tokens [N*k .. N*(k+1)-1] (the chunk
+// generated since the previous snapshot). Snapshot k's `thinking` value
+// is the residual-stream reading at the *last* of those N tokens; the
+// chunk is what the user is "looking at" at this scrub position.
+const SNAPSHOT_EVERY_N_TOKENS = 5;
+
+/** When the user scrubs to a non-final snapshot, return the literal output
+ *  text generated during that snapshot's chunk (N tokens). At the final
+ *  snapshot (which represents the turn-wide average, not a single chunk),
+ *  return null so the caller falls back to the user prompt preview. */
+function chunkTextForSnapshot(turn: Turn, snapIdx: number): string | null {
+  const lastIdx = turn.snapshots.length - 1;
+  if (snapIdx >= lastIdx) return null;
+  const tokenEnd = (snapIdx + 1) * SNAPSHOT_EVERY_N_TOKENS - 1;
+  if (tokenEnd >= turn.tokens.length) return null;
+  const tokenStart = snapIdx * SNAPSHOT_EVERY_N_TOKENS;
+  const charStart =
+    tokenStart > 0 ? turn.tokens[tokenStart - 1].charEnd : 0;
+  const charEnd = turn.tokens[tokenEnd].charEnd;
+  return turn.assistantReply.slice(charStart, charEnd);
 }
 
 function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
@@ -194,7 +290,6 @@ function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
   if (turns.length === 0) return <div className="mt-8 h-12" />;
 
   const turn = viewingIndex !== null ? turns[viewingIndex] : null;
-  const preview = turn ? previewWords(turn.userMessage, 10) : "";
   const snapCount = turn?.snapshots.length ?? 0;
   const sliderMax = Math.max(0, snapCount - 1);
   const isAtStart = viewingIndex === null || viewingIndex === 0;
@@ -203,10 +298,28 @@ function TurnNavigator(props: Omit<EmotionPanelProps, "state">) {
   const navDisabled = isReplaying || isGenerating;
   const scrubDisabled = navDisabled || snapCount <= 1;
 
+  // At a non-final scrub position: show the output chunk being analyzed
+  // at this snapshot. Otherwise show the user prompt preview as before.
+  const chunkText = turn ? chunkTextForSnapshot(turn, snapshotIndex) : null;
+  const showingChunk = chunkText !== null;
+  const previewText = showingChunk
+    ? chunkText.replace(/\s+/g, " ").trim()
+    : turn
+      ? previewWords(turn.userMessage, 10)
+      : "";
+  const previewLabel = showingChunk
+    ? `tokens ${snapshotIndex * SNAPSHOT_EVERY_N_TOKENS + 1}–${(snapshotIndex + 1) * SNAPSHOT_EVERY_N_TOKENS}`
+    : "prompt";
+
   return (
     <div className="mt-8 border-t border-divider pt-4">
-      <div className="mb-3 truncate text-[12px] text-ink-muted italic">
-        {preview ? `"${preview}"` : "—"}
+      <div className="mb-3 flex items-baseline gap-2">
+        <span className="smallcaps shrink-0 text-[10px] text-ink-faint">
+          {previewLabel}
+        </span>
+        <span className="truncate text-[12px] text-ink-muted italic">
+          {previewText ? `"${previewText}"` : "—"}
+        </span>
       </div>
 
       <div className="flex items-center gap-3 text-xs">

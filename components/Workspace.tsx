@@ -15,7 +15,6 @@ import {
   type Snapshot,
   type Turn,
 } from "@/lib/emotions";
-import { analyzeEmotions } from "@/lib/sentiment";
 import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
 import { type Layer } from "@/components/LayerSelector";
@@ -108,11 +107,8 @@ export function Workspace() {
   const [isReplaying, setIsReplaying] = useState(false);
 
   const [selectedExcerpt, setSelectedExcerpt] = useState<string | null>(null);
-  const [selectionEmotions, setSelectionEmotions] =
-    useState<EmotionValues | null>(null);
 
   const abortControllerRef = useRef<AbortController | null>(null);
-  const selectionAbortRef = useRef<AbortController | null>(null);
   const replayAbortRef = useRef(false);
   const savedViewRef = useRef<{ turn: number | null; snap: number } | null>(
     null,
@@ -138,9 +134,6 @@ export function Workspace() {
         !/[a-zA-Z]{2,}/.test(trimmed)
       ) {
         setSelectedExcerpt(null);
-        setSelectionEmotions(null);
-        selectionAbortRef.current?.abort();
-        selectionAbortRef.current = null;
         return;
       }
       setSelectedExcerpt(trimmed);
@@ -150,31 +143,6 @@ export function Workspace() {
       document.removeEventListener("selectionchange", onSelectionChange);
   }, []);
 
-  // Debounced classifier call on the selection (the dot's value).
-  useEffect(() => {
-    if (!selectedExcerpt) return;
-    const handle = setTimeout(async () => {
-      selectionAbortRef.current?.abort();
-      const controller = new AbortController();
-      selectionAbortRef.current = controller;
-      try {
-        const res = await fetch("/api/sentiment", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: selectedExcerpt }),
-          signal: controller.signal,
-        });
-        if (!res.ok) return;
-        const data = (await res.json()) as { emotions?: EmotionValues };
-        if (controller.signal.aborted) return;
-        if (data.emotions) setSelectionEmotions(data.emotions);
-      } catch {
-        // Aborted or network error — keep lexicon fallback.
-      }
-    }, 250);
-    return () => clearTimeout(handle);
-  }, [selectedExcerpt]);
-
   // Layered thinking averaged over the tokens that produced the selected
   // excerpt. Recomputed when the selection changes or new turns arrive.
   const selectionLayered = useMemo<LayeredEmotionValues | null>(() => {
@@ -183,13 +151,19 @@ export function Workspace() {
     return matched ? averageLayered(matched) : null;
   }, [selectedExcerpt, turns]);
 
+  // True when the user has dragged the scrubber off the final snapshot.
+  // The final snapshot is the only one whose bar reading represents the
+  // turn-as-a-whole; mid-scrub readings are per-chunk, so the post-hoc
+  // dot (which is a turn-as-a-whole reading) doesn't apply there.
+  const isAtNonFinalSnap = useMemo(() => {
+    if (viewingIndex === null) return false;
+    const turn = turns[viewingIndex];
+    if (!turn) return false;
+    return snapshotIndex < turn.snapshots.length - 1;
+  }, [viewingIndex, snapshotIndex, turns]);
+
   const displayedBars = useMemo<EmotionState>(() => {
     if (selectedExcerpt) {
-      // Dot: the *external* classifier on the highlighted text. Lexicon
-      // is the instant fallback while distilroberta is in flight.
-      const lexicon = analyzeEmotions(selectedExcerpt);
-      const dotValues = selectionEmotions ?? lexicon;
-
       // Halo: average residual-stream projection at the selected layer
       // over the tokens generated for this excerpt. If the excerpt isn't
       // in any reply (e.g. user message), halo sits at baseline.
@@ -197,18 +171,20 @@ export function Workspace() {
         ? selectionLayered[selectedLayer]
         : { ...BASELINE };
 
-      return { output: dotValues, thinking: haloValues };
+      // Dot stays put — it's the post-hoc reading of the whole turn,
+      // not of the selection. Highlighting moves the halo only.
+      return { output: rawBars.output, thinking: haloValues };
     }
     return {
-      output: rawBars.output,
+      output: isAtNonFinalSnap ? null : rawBars.output,
       thinking: rawBars.thinking[selectedLayer],
     };
   }, [
     selectedExcerpt,
-    selectionEmotions,
     selectionLayered,
     rawBars,
     selectedLayer,
+    isAtNonFinalSnap,
   ]);
 
   function applyTurnView(turnIdx: number, snapIdx: number) {
