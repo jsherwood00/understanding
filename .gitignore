@@ -51,7 +51,23 @@ next-env.d.ts
 __pycache__/
 *.pyc
 
+# personal reference (not pushed)
+/description.txt
+
 # pipeline outputs (vectors are committed; raw stories+activations are not)
 /data/stories/
 /data/activations/
 /data/run.log
+/data/no_thinking/batches/
+/data/no_thinking/activations/
+/data/no_thinking/stories/
+/data/thinking/batches/
+/data/thinking/activations/
+/data/thinking/stories/
+/data/neutral/batches/
+/data/neutral/activations/
+/data/neutral/stories/
+/data/neutral_no_thinking/batches/
+/data/neutral_no_thinking/activations/
+/data/neutral_thinking/batches/
+/data/neutral_thinking/activations/

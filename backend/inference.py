@@ -117,24 +117,45 @@ class EmotionEngine:
         # Verified path for Gemma 4 E4B in transformers 5.7.
         self.layers = self.model.model.language_model.layers
 
-        # Gemma chat ends a turn with <end_of_turn>, not <eos>. Stopping only
-        # on tokenizer.eos_token_id lets the model run past its real turn-end
-        # and degenerate into repetition. Collect every stop token the model
-        # might emit: tokenizer eos, generation_config eos (often a list),
-        # and the explicit <end_of_turn>.
+        # Gemma chat ends a turn with <turn|> (end-of-turn), and the
+        # global <eos> always terminates. We deliberately do NOT include
+        # <|tool_response> even though Gemma's generation_config lists it
+        # as an "eos" — that token is a stop only in agentic mode, where
+        # a tool runtime is supposed to inject the response. In plain
+        # chat we'd cut off the model mid-thought (e.g. its built-in
+        # think/tool-style scaffolding) before the actual reply lands.
         stop_ids: set[int] = set()
         if self.tokenizer.eos_token_id is not None:
             stop_ids.add(int(self.tokenizer.eos_token_id))
-        gen_eos = getattr(self.model.generation_config, "eos_token_id", None)
-        if isinstance(gen_eos, int):
-            stop_ids.add(gen_eos)
-        elif isinstance(gen_eos, (list, tuple)):
-            stop_ids.update(int(x) for x in gen_eos)
-        eot_id = self.tokenizer.convert_tokens_to_ids("<end_of_turn>")
-        if isinstance(eot_id, int) and eot_id != self.tokenizer.unk_token_id:
-            stop_ids.add(eot_id)
+        for name in ("<turn|>", "<end_of_turn>"):
+            tid = self.tokenizer.convert_tokens_to_ids(name)
+            if isinstance(tid, int) and tid != self.tokenizer.unk_token_id:
+                stop_ids.add(tid)
         self.stop_token_ids = stop_ids
         print(f"[engine] stop tokens: {sorted(stop_ids)}", flush=True)
+
+        # Channel markers — Gemma 4 wraps its thinking in
+        # <|channel>thought\n[reasoning]<channel|>[reply]. We track the
+        # marker token IDs so we can split the stream into "thought" and
+        # "reply" phases, and so the frontend can render each phase
+        # distinctly. We also pre-resolve the token IDs of the literal
+        # "thought" channel label so we can skip emitting them as content.
+        def _safe_id(name: str) -> Optional[int]:
+            tid = self.tokenizer.convert_tokens_to_ids(name)
+            return tid if isinstance(tid, int) and tid != self.tokenizer.unk_token_id else None
+        self.channel_open_id = _safe_id("<|channel>")
+        self.channel_close_id = _safe_id("<channel|>")
+        # The label after <|channel> is the channel name + a newline,
+        # tokenized. For the "thought" channel that's just `thought\n`,
+        # which the tokenizer typically encodes as 1–3 tokens depending
+        # on the BPE merges. We compute the count once at init.
+        label_ids = self.tokenizer("thought\n", add_special_tokens=False).input_ids
+        self.channel_label_token_count = len(label_ids)
+        print(
+            f"[engine] channel markers: open={self.channel_open_id} "
+            f"close={self.channel_close_id} label_tokens={self.channel_label_token_count}",
+            flush=True,
+        )
 
         self.vectors = load_vectors(self.device)  # {layer: (6, 2560) tensor}
         self.calibration = load_calibration()
@@ -253,8 +274,16 @@ class EmotionEngine:
         if history:
             msgs.extend(history)
         msgs.append({"role": "user", "content": message})
+        # `enable_thinking=True` injects a system-prompt-level <|think|>
+        # signal in Gemma 4 E4B's chat template, which causes the model
+        # to produce an explicit thinking block before the reply. Without
+        # this flag the model goes straight to the answer with no visible
+        # reasoning trace.
         text = self.tokenizer.apply_chat_template(
-            msgs, tokenize=False, add_generation_prompt=True,
+            msgs,
+            tokenize=False,
+            add_generation_prompt=True,
+            enable_thinking=True,
         )
         ids = self.tokenizer(text, return_tensors="pt").input_ids
         return ids.to(self.device)
@@ -301,61 +330,117 @@ class EmotionEngine:
             generated_ids: list[int] = []
             full_text_so_far = ""
             last_yield_at: Optional[float] = None
+            # Phase tracking — see _build_prompt; the model emits
+            # <|channel>thought\n[reasoning]<channel|>[reply] when
+            # thinking is enabled, and we surface those two streams
+            # separately to the frontend.
+            phase = "reply"
+            label_skip_remaining = 0
 
-            # First forward (full prompt) — populates KV cache + hook
-            # captures. We don't yield a projection for this step; the
-            # prompt's own activations aren't a "thinking" event for the
-            # user.
-            next_id, past_key_values = self._step(
-                input_ids, None, do_sample=True,
-            )
-
-            for step in range(max_new_tokens):
-                if next_id in self.stop_token_ids:
-                    break
-
-                generated_ids.append(next_id)
-
-                # Decode incrementally for correct multi-byte handling.
-                decoded = self.tokenizer.decode(
-                    generated_ids, skip_special_tokens=True,
+            try:
+                # First forward (full prompt) — populates KV cache + hook
+                # captures. We don't yield a projection for this step; the
+                # prompt's own activations aren't a "thinking" event.
+                next_id, past_key_values = self._step(
+                    input_ids, None, do_sample=True,
                 )
-                delta = decoded[len(full_text_so_far):]
-                full_text_so_far = decoded
 
-                # Project + normalize at every target layer. ~10us total
-                # extra over single-layer projection, negligible.
-                all_raw = self.project_all_layers_raw()
-                all_thinking = {
-                    str(L): self._normalize(all_raw[L], L)
-                    for L in TARGET_LAYERS
-                }
+                for step in range(max_new_tokens):
+                    if next_id in self.stop_token_ids:
+                        break
 
-                if last_yield_at is not None:
-                    target = last_yield_at + MIN_TOKEN_INTERVAL_S
-                    now = time.monotonic()
-                    if now < target:
-                        await asyncio.sleep(target - now)
-                last_yield_at = time.monotonic()
+                    # Channel markers steer phase but are not user-visible
+                    # text. We still record them in generated_ids so the
+                    # decoder's BPE state stays consistent, but we don't
+                    # emit a token event for them.
+                    is_marker = False
+                    if next_id == self.channel_open_id:
+                        phase = "thought"
+                        label_skip_remaining = self.channel_label_token_count
+                        is_marker = True
+                    elif next_id == self.channel_close_id:
+                        phase = "reply"
+                        is_marker = True
+
+                    generated_ids.append(next_id)
+
+                    # Decode incrementally for correct multi-byte handling.
+                    decoded = self.tokenizer.decode(
+                        generated_ids, skip_special_tokens=True,
+                    )
+                    delta = decoded[len(full_text_so_far):]
+                    full_text_so_far = decoded
+
+                    # Project + normalize at every target layer. ~10us total
+                    # extra over single-layer projection, negligible.
+                    all_raw = self.project_all_layers_raw()
+                    all_thinking = {
+                        str(L): self._normalize(all_raw[L], L)
+                        for L in TARGET_LAYERS
+                    }
+
+                    # Drop marker tokens (no visible text anyway, since
+                    # decode strips specials) and the channel-label tokens
+                    # that follow <|channel> ("thought\n").
+                    suppress_emit = is_marker
+                    if not is_marker and label_skip_remaining > 0:
+                        label_skip_remaining -= 1
+                        suppress_emit = True
+
+                    # Always advance to next token even if we skipped emit.
+                    next_input = torch.tensor(
+                        [[next_id]], dtype=input_ids.dtype, device=self.device,
+                    )
+                    next_id, past_key_values = self._step(
+                        next_input, past_key_values, do_sample=True,
+                    )
+
+                    if suppress_emit or not delta:
+                        continue
+
+                    if last_yield_at is not None:
+                        target = last_yield_at + MIN_TOKEN_INTERVAL_S
+                        now = time.monotonic()
+                        if now < target:
+                            await asyncio.sleep(target - now)
+                    last_yield_at = time.monotonic()
+
+                    yield {
+                        "type": "token",
+                        "text": delta,
+                        "thinking": all_thinking,
+                        "step": step,
+                        "phase": phase,
+                    }
+
+                    await asyncio.sleep(0)
+
+                # Debug: log the raw decoded sequence (special tokens
+                # visible) so we can see what scaffolding the model
+                # emitted (<|think|>, <|tool_response>, etc.).
+                raw = self.tokenizer.decode(
+                    generated_ids, skip_special_tokens=False,
+                )
+                print(
+                    f"[engine] generated {len(generated_ids)} toks; "
+                    f"raw sample: {raw[:400]!r}"
+                    + (" ..." if len(raw) > 400 else ""),
+                    flush=True,
+                )
 
                 yield {
-                    "type": "token",
-                    "text": delta,
-                    "thinking": all_thinking,
-                    "step": step,
+                    "type": "done",
+                    "fullText": full_text_so_far,
+                    "tokens": len(generated_ids),
                 }
-
-                await asyncio.sleep(0)
-
-                next_input = torch.tensor(
-                    [[next_id]], dtype=input_ids.dtype, device=self.device,
-                )
-                next_id, past_key_values = self._step(
-                    next_input, past_key_values, do_sample=True,
-                )
-
-            yield {
-                "type": "done",
-                "fullText": full_text_so_far,
-                "tokens": len(generated_ids),
-            }
+            finally:
+                # Release GPU memory before the next turn. Without this,
+                # the KV cache from each turn lingers in PyTorch's
+                # allocator and the cache fragments — eventually a new
+                # turn fails to allocate even though plenty of bytes are
+                # technically free. Hook captures hold per-layer tensors
+                # too and need the same explicit drop.
+                past_key_values = None
+                self._captured.clear()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()

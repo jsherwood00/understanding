@@ -62,6 +62,18 @@ TRAIN_TRIALS = 12
 # accumulating components for the projection-out matrix.
 NEUTRAL_PC_VAR_TARGET = 0.50
 
+# Pre-registered topic split (commit 8a6f5f7). Topics 0-79 train, 80-99
+# holdout. Vector computation uses ONLY train topics; validation tests
+# generalization to the topic holdout.
+TOPIC_SPLIT_PATH = Path(__file__).parent / "topic_split.json"
+
+
+def load_topic_split() -> tuple[set[int], set[int]]:
+    """Returns (train_topics, holdout_topics) as sets of indices."""
+    with open(TOPIC_SPLIT_PATH) as f:
+        d = json.load(f)
+    return set(d["train_topics"]), set(d["holdout_topics"])
+
 # Filename patterns produced by extract_activations.py.
 STORY_NPZ_RE = re.compile(
     r"^(\w+)_topic_(\d+)_split_(\w+)_story_(\d+)\.npz$"
@@ -127,18 +139,23 @@ def aggregate_corpus_stories(
     corpus_dir: Path,
     cutoffs: tuple[int, ...],
     include_leaky: bool,
+    train_topics: set[int],
 ) -> dict:
     """For story NPZs in this corpus, returns
         out[cutoff][emotion][layer] = list of per-story means
-    Train-only (story_idx < TRAIN_TRIALS). Skips leaky stories unless
-    include_leaky=True. Returns also stats for logging."""
+    Restricted to:
+      - train topics (topic_idx in train_topics, per topic_split.json
+        commit 8a6f5f7)
+      - train trials (story_idx < TRAIN_TRIALS)
+      - clean stories (contains_emotion_word == [], unless --include-leaky)"""
     activations_dir = corpus_dir / "activations"
     out: dict = {
         c: {e: {L: [] for L in TARGET_LAYERS} for e in EMOTIONS}
         for c in cutoffs
     }
     stats = {
-        "total_npz": 0, "loaded": 0, "skipped_holdout": 0,
+        "total_npz": 0, "loaded": 0,
+        "skipped_topic_holdout": 0, "skipped_trial_holdout": 0,
         "skipped_leaky": 0, "skipped_other": 0,
     }
     if not activations_dir.exists():
@@ -153,12 +170,15 @@ def aggregate_corpus_stories(
         if not parsed:
             stats["skipped_other"] += 1
             continue
-        emotion, _topic_idx, _split, story_idx = parsed
+        emotion, topic_idx, _split, story_idx = parsed
         if emotion not in EMOTIONS:
             stats["skipped_other"] += 1
             continue
+        if topic_idx not in train_topics:
+            stats["skipped_topic_holdout"] += 1
+            continue
         if story_idx >= TRAIN_TRIALS:
-            stats["skipped_holdout"] += 1
+            stats["skipped_trial_holdout"] += 1
             continue
 
         d = load_npz_safely(p)
@@ -185,15 +205,19 @@ def aggregate_corpus_stories(
 
 def aggregate_thinking_thoughts(
     cutoffs: tuple[int, ...],
+    train_topics: set[int],
 ) -> dict:
-    """One thought NPZ per batch (thinking corpus). Train batches only."""
+    """One thought NPZ per batch (thinking corpus). Train batches AND
+    train topics only — both the trial-level and topic-level holdouts
+    are excluded from vector computation."""
     activations_dir = ROOT_DATA_DIR / "thinking" / "activations"
     out: dict = {
         c: {e: {L: [] for L in TARGET_LAYERS} for e in EMOTIONS}
         for c in cutoffs
     }
     stats = {
-        "total_npz": 0, "loaded": 0, "skipped_holdout": 0,
+        "total_npz": 0, "loaded": 0,
+        "skipped_topic_holdout": 0, "skipped_trial_holdout": 0,
         "skipped_other": 0,
     }
     if not activations_dir.exists():
@@ -208,12 +232,15 @@ def aggregate_thinking_thoughts(
         if not parsed:
             stats["skipped_other"] += 1
             continue
-        emotion, _topic_idx, split = parsed
+        emotion, topic_idx, split = parsed
         if emotion not in EMOTIONS:
             stats["skipped_other"] += 1
             continue
+        if topic_idx not in train_topics:
+            stats["skipped_topic_holdout"] += 1
+            continue
         if split == "holdout":
-            stats["skipped_holdout"] += 1
+            stats["skipped_trial_holdout"] += 1
             continue
 
         d = load_npz_safely(p)
@@ -233,15 +260,25 @@ def aggregate_thinking_thoughts(
     return out, stats
 
 
-def aggregate_neutral_per_token() -> dict[int, list[np.ndarray]]:
-    """For PCA basis: keep all tokens (no scope, no cutoff). The neutral
-    corpus has only `_story_*.npz` files (n=1 per prompt, no thought)."""
+def aggregate_neutral_per_token(
+    corpus_name: str,
+    scope: str,
+) -> dict[int, list[np.ndarray]]:
+    """For PCA basis: keep all tokens (no scope-cutoff). The per-set
+    PC basis design (user spec):
+      V1 (no_thinking_full)   ← corpus_name="neutral_no_thinking"   scope="story"
+      V2 (thinking_thought)   ← corpus_name="neutral_thinking"      scope="thought"
+      V3 (thinking_reply)     ← corpus_name="neutral_thinking"      scope="story"
+    `scope` selects which file pattern: "*_story_*.npz" or "*_thought.npz".
+    """
     out: dict[int, list[np.ndarray]] = {L: [] for L in TARGET_LAYERS}
-    activations_dir = ROOT_DATA_DIR / "neutral" / "activations"
+    activations_dir = ROOT_DATA_DIR / corpus_name / "activations"
     if not activations_dir.exists():
+        print(f"  WARN: {activations_dir} does not exist; PC basis empty")
         return out
-    files = sorted(activations_dir.glob("*_story_*.npz"))
-    print(f"  walking {len(files)} neutral NPZs in {activations_dir}...")
+    pattern = "*_story_*.npz" if scope == "story" else "*_thought.npz"
+    files = sorted(activations_dir.glob(pattern))
+    print(f"  walking {len(files)} {scope} NPZs in {activations_dir}...")
     for p in files:
         d = load_npz_safely(p)
         if d is None:
@@ -447,21 +484,35 @@ def parse_args():
     return p.parse_args()
 
 
+def build_pcs(corpus_name: str, scope: str, label: str) -> Optional[dict[int, np.ndarray]]:
+    """Build the projection-out PC basis for one vector set."""
+    print(f"\n==== neutral PCs for {label}  ({corpus_name}/{scope}) ====")
+    per_token = aggregate_neutral_per_token(corpus_name, scope)
+    if not any(per_token[L] for L in TARGET_LAYERS):
+        print(f"  no activations at {corpus_name}/{scope} — skipping denoise.")
+        return None
+    return neutral_pcs_per_layer(per_token)
+
+
 def main():
     args = parse_args()
     t0 = time.time()
 
-    # Build neutral PCs (shared across all sets).
-    neutral_pcs: Optional[dict[int, np.ndarray]] = None
-    if not args.no_denoise:
-        print("\n==== neutral PCs (for projection-out denoising) ====")
-        per_token = aggregate_neutral_per_token()
-        if any(per_token[L] for L in TARGET_LAYERS):
-            neutral_pcs = neutral_pcs_per_layer(per_token)
-        else:
-            print("  no neutral activations found — proceeding without denoising.")
-    else:
+    train_topics, holdout_topics = load_topic_split()
+    print(f"topic split (pre-reg 8a6f5f7): "
+          f"{len(train_topics)} train, {len(holdout_topics)} holdout")
+
+    # Per-vector-set PC bases (user spec):
+    #   V1 ← neutral_no_thinking story activations (full output)
+    #   V2 ← neutral_thinking THOUGHT activations
+    #   V3 ← neutral_thinking REPLY (story) activations
+    if args.no_denoise:
         print("[--no-denoise] skipping projection-out step.")
+        pcs_v1 = pcs_v2 = pcs_v3 = None
+    else:
+        pcs_v1 = build_pcs("neutral_no_thinking", "story", "V1 (no_thinking_full)")
+        pcs_v3 = build_pcs("neutral_thinking", "story", "V3 (thinking_reply)")
+        pcs_v2 = build_pcs("neutral_thinking", "thought", "V2 (thinking_thought)")
 
     runs: list[tuple[bool, str]] = [(False, "clean")]
     if args.include_leaky:
@@ -473,48 +524,51 @@ def main():
         # Set 1: no_thinking, full
         print(f"\n==== set 1: no_thinking_full ({suffix_tag}) ====")
         nested, stats = aggregate_corpus_stories(
-            ROOT_DATA_DIR / "no_thinking", CUTOFFS, include_leaky,
+            ROOT_DATA_DIR / "no_thinking", CUTOFFS, include_leaky, train_topics,
         )
         print(f"  loaded {stats['loaded']}, "
-              f"holdout-skipped {stats['skipped_holdout']}, "
-              f"leak-skipped {stats['skipped_leaky']}, "
-              f"other-skipped {stats['skipped_other']}")
+              f"topic-holdout {stats['skipped_topic_holdout']}, "
+              f"trial-holdout {stats['skipped_trial_holdout']}, "
+              f"leak {stats['skipped_leaky']}, "
+              f"other {stats['skipped_other']}")
         compute_set(
             nested=nested, cutoffs=CUTOFFS,
             out_root=ROOT_DATA_DIR / "no_thinking" / "vectors" / f"full{out_suffix}",
             set_label=f"no_thinking_full {suffix_tag}",
-            neutral_pcs=neutral_pcs,
+            neutral_pcs=pcs_v1,
         )
 
         # Set 2: thinking, reply
         print(f"\n==== set 2: thinking_reply ({suffix_tag}) ====")
         nested, stats = aggregate_corpus_stories(
-            ROOT_DATA_DIR / "thinking", CUTOFFS, include_leaky,
+            ROOT_DATA_DIR / "thinking", CUTOFFS, include_leaky, train_topics,
         )
         print(f"  loaded {stats['loaded']}, "
-              f"holdout-skipped {stats['skipped_holdout']}, "
-              f"leak-skipped {stats['skipped_leaky']}, "
-              f"other-skipped {stats['skipped_other']}")
+              f"topic-holdout {stats['skipped_topic_holdout']}, "
+              f"trial-holdout {stats['skipped_trial_holdout']}, "
+              f"leak {stats['skipped_leaky']}, "
+              f"other {stats['skipped_other']}")
         compute_set(
             nested=nested, cutoffs=CUTOFFS,
             out_root=ROOT_DATA_DIR / "thinking" / "vectors" / f"reply{out_suffix}",
             set_label=f"thinking_reply {suffix_tag}",
-            neutral_pcs=neutral_pcs,
+            neutral_pcs=pcs_v3,
         )
 
     # Set 3: thinking, thought (leak filter not applied to thoughts —
     # the model's reasoning often quotes the emotion word explicitly,
     # which is fine for thought-level analysis).
     print(f"\n==== set 3: thinking_thought ====")
-    nested, stats = aggregate_thinking_thoughts(CUTOFFS)
+    nested, stats = aggregate_thinking_thoughts(CUTOFFS, train_topics)
     print(f"  loaded {stats['loaded']}, "
-          f"holdout-skipped {stats['skipped_holdout']}, "
-          f"other-skipped {stats['skipped_other']}")
+          f"topic-holdout {stats['skipped_topic_holdout']}, "
+          f"trial-holdout {stats['skipped_trial_holdout']}, "
+          f"other {stats['skipped_other']}")
     compute_set(
         nested=nested, cutoffs=CUTOFFS,
         out_root=ROOT_DATA_DIR / "thinking" / "vectors" / "thought",
         set_label="thinking_thought",
-        neutral_pcs=neutral_pcs,
+        neutral_pcs=pcs_v2,
     )
 
     print(f"\ndone in {time.time() - t0:.1f}s")

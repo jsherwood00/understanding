@@ -94,6 +94,25 @@ body {
   animation: caret-blink 1s steps(1) infinite;
 }
 
+/* Hide the default disclosure triangle on the collapsible "thinking…"
+ * indicator. Firefox honors `list-style: none`; WebKit needs the
+ * pseudo-element override. We render our own subtle leading dot inline. */
+.thought-summary::-webkit-details-marker {
+  display: none;
+}
+.thought-summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 0.4em;
+  font-style: normal;
+  font-size: 0.75em;
+  transition: transform 150ms ease-out;
+  color: var(--color-ink-faint, currentColor);
+}
+details[open] > .thought-summary::before {
+  transform: rotate(90deg);
+}
+
 @keyframes divergence-pulse {
   0%,
   100% {

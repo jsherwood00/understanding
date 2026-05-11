@@ -43,7 +43,16 @@ EMOTIONS = ["joy", "sadness", "anger", "fear", "surprise", "disgust"]
 TARGET_LAYERS = [13, 17, 21, 25, 28, 32]
 PHASE_THOUGHT = np.uint8(0)
 PHASE_REPLY = np.uint8(1)
-TRAIN_TRIALS = 12  # trials >= 12 are holdout
+TRAIN_TRIALS = 12  # trials >= 12 are within-cell holdout
+
+TOPIC_SPLIT_PATH = Path(__file__).parent / "topic_split.json"
+
+
+def load_topic_split() -> tuple[set[int], set[int]]:
+    with open(TOPIC_SPLIT_PATH) as f:
+        d = json.load(f)
+    return set(d["train_topics"]), set(d["holdout_topics"])
+
 
 STORY_NPZ_RE = re.compile(
     r"^(\w+)_topic_(\d+)_split_(\w+)_story_(\d+)\.npz$"
@@ -83,24 +92,35 @@ def holdout_means(
     corpus_dir: Path,
     scope: str,
     cutoff: int,
+    kind: str,
 ) -> dict[int, list[tuple[str, np.ndarray]]]:
     """For each layer, returns list of (true_emotion, mean-vec) for every
-    holdout NPZ matching `scope`:
-        scope="full"     → corpus_dir/activations/*_split_holdout_story_*.npz
-        scope="reply"    → same (story NPZs in thinking corpus)
-        scope="thought"  → corpus_dir/activations/*_split_holdout_thought.npz
+    NPZ in the requested holdout set.
+
+    `scope` ∈ {full, reply, thought} — selects the file pattern.
+    `kind`  ∈ {within_cell, topic_level, all}:
+        within_cell  — split=holdout (trials 12-14) only, within TRAIN topics
+                       (0-79). In-distribution sanity check.
+        topic_level  — ALL trials (0-14), but only TOPIC-HOLDOUT topics
+                       (80-99). The pre-registered headline metric for
+                       cross-topic generalization.
+        all          — every holdout NPZ (union of above).
     """
     out: dict[int, list[tuple[str, np.ndarray]]] = {L: [] for L in TARGET_LAYERS}
     activations_dir = corpus_dir / "activations"
     if not activations_dir.exists():
         return out
 
+    train_topics, holdout_topics = load_topic_split()
+
     if scope in ("full", "reply"):
-        pattern = "*_split_holdout_story_*.npz"
+        pattern = "*_story_*.npz"
         regex = STORY_NPZ_RE
+        unpack = lambda m: (m.group(1), int(m.group(2)), m.group(3))
     elif scope == "thought":
-        pattern = "*_split_holdout_thought.npz"
+        pattern = "*_thought.npz"
         regex = THOUGHT_NPZ_RE
+        unpack = lambda m: (m.group(1), int(m.group(2)), m.group(3))
     else:
         raise ValueError(f"unknown scope {scope!r}")
 
@@ -108,9 +128,29 @@ def holdout_means(
         m = regex.match(p.name)
         if not m:
             continue
-        emotion = m.group(1)
+        emotion, topic_idx, split = unpack(m)
         if emotion not in EMOTIONS:
             continue
+
+        in_topic_holdout = topic_idx in holdout_topics
+        in_trial_holdout = (split == "holdout")
+        in_train = (topic_idx in train_topics) and (not in_trial_holdout)
+
+        if kind == "within_cell":
+            # Train topics, holdout trials
+            if not (topic_idx in train_topics and in_trial_holdout):
+                continue
+        elif kind == "topic_level":
+            # Holdout topics, ALL trials
+            if not in_topic_holdout:
+                continue
+        elif kind == "all":
+            # Anything that's not in the train set
+            if in_train:
+                continue
+        else:
+            raise ValueError(f"unknown kind {kind!r}")
+
         try:
             d = np.load(p)
         except Exception:
@@ -292,12 +332,14 @@ def parse_args():
 
 def run_one(corpus: str, scope: str, cutoff: int, do_logit_lens: bool, do_classification: bool):
     corpus_dir = ROOT_DATA_DIR / corpus
-    out_dir = corpus_dir / "vectors" / f"cutoff_{cutoff}" / scope
+    # New vector layout: data/<corpus>/vectors/<scope>/cutoff_{N}/...
+    # Where scope is one of: full (no_thinking), reply (thinking), thought (thinking).
+    out_dir = corpus_dir / "vectors" / scope / f"cutoff_{cutoff}"
     if not out_dir.exists():
         print(f"  no vectors at {out_dir} — skip.")
         return
 
-    print(f"\n==== validate {corpus} / cutoff={cutoff} / scope={scope} ====")
+    print(f"\n==== validate {corpus} / scope={scope} / cutoff={cutoff} ====")
     vectors = load_vectors(out_dir)
     if not any(v for v in vectors.values()):
         print("  no vectors loaded — skip.")
@@ -315,20 +357,29 @@ def run_one(corpus: str, scope: str, cutoff: int, do_logit_lens: bool, do_classi
             print(f"    !! {len(bal['flags'])} (emotion, topic) pairs over "
                   f"dominance threshold")
 
-    # Holdout classification.
+    # Two-tier holdout classification:
+    #   - within_cell: trials 12-14 of TRAIN topics (in-distribution sanity)
+    #   - topic_level: ALL trials of HOLDOUT topics (headline metric)
     if do_classification:
-        print("\n  holdout classification:")
-        holdout = holdout_means(corpus_dir, scope, cutoff)
-        for L in TARGET_LAYERS:
-            layer_holdout = holdout.get(L, [])
-            layer_vecs = {E: vectors[E][L] for E in EMOTIONS if L in vectors[E]}
-            res = classify_holdout(layer_holdout, layer_vecs)
-            if res["n"] == 0:
-                print(f"    layer {L:>2}: no holdout data")
-                continue
-            print(f"    layer {L:>2}: n={res['n']:>3}, acc={res['accuracy']:.2%}")
-            with open(out_dir / f"holdout_classification_layer_{L}.json", "w") as f:
-                json.dump(res, f, indent=2)
+        for kind, label in [
+            ("topic_level", "TOPIC-LEVEL HOLDOUT (headline)"),
+            ("within_cell", "within-cell holdout (in-distribution sanity)"),
+        ]:
+            print(f"\n  {label}:")
+            holdout = holdout_means(corpus_dir, scope, cutoff, kind)
+            all_results: dict[int, dict] = {}
+            for L in TARGET_LAYERS:
+                layer_holdout = holdout.get(L, [])
+                layer_vecs = {E: vectors[E][L] for E in EMOTIONS if L in vectors[E]}
+                res = classify_holdout(layer_holdout, layer_vecs)
+                if res["n"] == 0:
+                    print(f"    layer {L:>2}: no holdout data")
+                    continue
+                print(f"    layer {L:>2}: n={res['n']:>4}, acc={res['accuracy']:.2%}")
+                all_results[L] = res
+            # Save per-kind JSON (one file per layer for the headline; combined for in-dist).
+            with open(out_dir / f"holdout_classification_{kind}.json", "w") as f:
+                json.dump(all_results, f, indent=2)
 
     # Logit lens — pick the most-common best layer.
     if do_logit_lens:
@@ -359,9 +410,12 @@ def main():
     args = parse_args()
 
     if args.all:
+        # Scopes per corpus (matches compute_vectors.py output layout):
+        #   no_thinking: full only
+        #   thinking:    reply (V3) and thought (V2)
         scopes = (
             ("full",) if args.corpus == "no_thinking"
-            else ("full", "thought", "reply")
+            else ("reply", "thought")
         )
         for cutoff in (0, 25, 50):
             for scope in scopes:

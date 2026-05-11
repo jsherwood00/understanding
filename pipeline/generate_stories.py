@@ -247,7 +247,69 @@ IMPORTANT: You must NEVER use the word '{emotion}' or any direct synonyms of it 
 The emotion should be clearly conveyed to the reader through these indirect means, but never explicitly named."""
 
 
-# Neutral prompts for the projection-out denoising set.
+# Neutral DIALOGUE prompt template (Sofroniew et al. 2026, verbatim).
+# Used for the projection-out denoising set, but designed to match the
+# activation regime of each emotion-vector set:
+#   neutral_no_thinking → V1 PCs (no_thinking_full)
+#   neutral_thinking    → V2/V3 PCs (thinking thought-only / reply-only)
+# Same 100 topics as the emotional corpora; n=5 per call (5 dialogues
+# per topic × 100 topics = 500 dialogues per corpus).
+#
+# After parsing, "Person:" → "Human:" and "AI:" → "Assistant:" by post-
+# hoc rename in the saved transcripts (matches Anthropic's methodology
+# and any test data that uses Human/Assistant formatting).
+NEUTRAL_DIALOGUE_PROMPT_TEMPLATE = """Write {n_stories} different dialogues based on the following topic.
+
+Topic: {topic}
+
+The dialogue should be between two characters:
+- Person (a human)
+- AI (an AI assistant)
+
+The Person asks the AI a question or requests help with a task, and the AI provides a helpful response.
+
+The first speaker turn should always be from Person.
+
+Format the dialogues like so:
+
+[optional system instructions]
+
+Person: [line]
+AI: [line]
+Person: [line]
+AI: [line]
+
+[continue for 2-6 exchanges]
+
+[dialogue 2]
+etc.
+
+IMPORTANT: Always put a blank line before each speaker turn. Each turn should start with "Person:" or "AI:" on its own line after a blank line.
+
+Generate a diverse mix of dialogue types across the {n_stories} examples:
+- Some, but not all should include a system prompt at the start. These should come before the first Person turn. No tag like "System:" is needed, just put the instructions at the top. You can use "you" or "The assistant" to refer to the AI in the system prompt.
+- Some should be about code or programming tasks
+- Some should be factual questions (science, history, math, geography)
+- Some should be work-related tasks (writing, analysis, summarization)
+- Some should be practical how-to questions
+- Some should be creative but neutral tasks (brainstorming names, generating lists)
+- If it's natural to do so given the topic, it's ok for the dialogue to be a single back and forth (Person asks a question, AI answers), but at least some should have multiple exchanges.
+
+CRITICAL REQUIREMENT: These dialogues must be completely neutral and emotionless.
+- NO emotional content whatsoever - not explicit, not implied, not subtle
+- The Person should not express any feelings (no frustration, excitement, gratitude, worry, etc.)
+- The AI should not express any feelings (no enthusiasm, concern, satisfaction, etc.)
+- The system prompt, if present, should not mention emotions at all, nor contain any emotionally charged language
+- Avoid emotionally-charged topics entirely
+- Use matter-of-fact, neutral language throughout
+- No pleasantries (avoid "I'd be happy to help", "Great question!", etc.)
+- Focus purely on information exchange and task completion"""
+
+NEUTRAL_DIALOGUES_PER_TOPIC = 5  # n_stories per neutral-dialogue call
+
+
+# (Legacy 50-prompt neutral set, kept for backward compatibility but no
+# longer used by the main pipeline.)
 NEUTRAL_PROMPTS: list[str] = [
     "Describe how to brew a pot of black tea in detail.",
     "Explain how a printer works step by step.",
@@ -536,6 +598,80 @@ def parse_batched_stories(text: str, n_expected: int) -> Optional[list[str]]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Dialogue-batch parser (for neutral_no_thinking / neutral_thinking)
+# ---------------------------------------------------------------------------
+# The dialogue prompt asks for n=5 dialogues. Format example shows
+# "[dialogue 2]" markers — implying dialogue 1 is implicit at the start
+# and subsequent dialogues are marked. Some models still emit
+# "[dialogue 1]" explicitly; we handle both.
+
+# Patterns the model might use to delimit dialogues. Tried in order;
+# whichever yields exactly n_expected non-empty parts wins. We've seen
+# the model use: "[dialogue 1]", "Dialogue 1:", "// Dialogue 1:",
+# "**Dialogue 1**", "## Dialogue 1", "--- Dialogue 1 ---", etc.
+# The line-start patterns allow common prefix characters (//, #, *, -,
+# =, >) ahead of the "Dialogue N" anchor.
+_PREFIX_CLASS = r"(?:[\/\#\*\>\-=]+)?"  # optional prefix chars
+_DIALOGUE_PATTERNS = [
+    # [dialogue 1] / [Dialogue 1: anything] — bracketed form, optional
+    # heading text inside the brackets after the digit.
+    re.compile(r"\[\s*[Dd]ialogue\s+\d+[^\]]*\]\s*", re.MULTILINE),
+    # Bare or prefix-prefixed Dialogue N: / Dialogue N -- on its own line
+    re.compile(
+        rf"(?:^|\n)\s*{_PREFIX_CLASS}\s*[Dd]ialogue\s+\d+\b[:\.\-—]?\s*[^\n]*\n",
+        re.MULTILINE,
+    ),
+    # **Dialogue 1:** / **Dialogue 1** markdown bold
+    re.compile(r"\*\*\s*[Dd]ialogue\s+\d+[^*\n]*\*\*\s*", re.MULTILINE),
+]
+
+
+def parse_batched_dialogues(text: str, n_expected: int) -> Optional[list[str]]:
+    """Returns the n_expected dialogues parsed from a batched neutral-
+    dialogue output, or None if parsing genuinely fails.
+
+    Implicit-dialogue-1 handling: if the first marker found is for
+    dialogue 2 (i.e., dialogue 1 was implicit at the start of the
+    output), the pre-marker chunk is treated as dialogue 1.
+
+    Overshoot handling: if the model wrote MORE than n_expected
+    dialogues (it sometimes ignores the n=5 instruction and writes 6),
+    we accept the first n_expected. Neutral dialogues are all on the
+    same topic and intentionally non-emotional; the extra ones are
+    just unused. Undershoot is still a rejection — we don't fabricate."""
+    text = text.strip()
+    for pat in _DIALOGUE_PATTERNS:
+        matches = list(pat.finditer(text))
+        if not matches:
+            continue
+        first_marker = matches[0].group(0)
+        is_explicit_d1 = bool(
+            re.search(r"dialogue\s+1\b", first_marker, re.IGNORECASE)
+        )
+        if is_explicit_d1:
+            parts = pat.split(text)[1:]
+        else:
+            first_chunk = text[: matches[0].start()].strip()
+            rest_chunks = pat.split(text[matches[0].start():])[1:]
+            parts = [first_chunk] + rest_chunks
+        candidates = [p.strip() for p in parts if p.strip()]
+        if len(candidates) >= n_expected:
+            return candidates[:n_expected]
+    # Last resort: a single dialogue (n_expected == 1) with no markers
+    if n_expected == 1 and text:
+        return [text]
+    return None
+
+
+def rename_speakers(dialogue: str) -> str:
+    """Swap Person: → Human: and AI: → Assistant: per spec, matching
+    Anthropic's methodology and any test data using Human/Assistant."""
+    out = re.sub(r"(?m)^\s*Person:\s*", "Human: ", dialogue)
+    out = re.sub(r"(?m)^\s*AI:\s*", "Assistant: ", out)
+    return out
+
+
 # ============================================================================
 # Channel-block splitting (thinking corpus)
 # ============================================================================
@@ -653,13 +789,19 @@ def batch_path(corpus_dir: Path, tag: str) -> Path:
 
 
 def is_done(corpus_dir: Path, tag: str) -> bool:
+    """A batch counts as done if its JSON exists with any terminal
+    parse_status — either "ok" (successfully parsed) or any "fail_*"
+    state (the model produced something we won't use). Failures are
+    deterministic given the seed, so retrying just rewastes GPU. The
+    failure stub is preserved for audit either way."""
     p = batch_path(corpus_dir, tag)
     if not p.exists():
         return False
     try:
         with open(p) as f:
             d = json.load(f)
-        return d.get("parse_status") == "ok"
+        status = d.get("parse_status", "")
+        return status == "ok" or status.startswith("fail_")
     except Exception:
         return False
 
@@ -692,8 +834,15 @@ def parse_args():
     p = argparse.ArgumentParser(description="Generate batched emotion-stories corpus.")
     p.add_argument(
         "--corpus",
-        choices=("no_thinking", "thinking", "neutral"),
+        choices=(
+            "no_thinking", "thinking",
+            "neutral", "neutral_no_thinking", "neutral_thinking",
+        ),
         required=True,
+        help="`neutral` is the legacy 50-prompt single-story neutral set; "
+             "`neutral_no_thinking` and `neutral_thinking` are the "
+             "Sofroniew-style dialogue corpora used as PCA bases for "
+             "projection-out denoising.",
     )
     p.add_argument(
         "--splits",
@@ -741,6 +890,7 @@ def plan_emotion_batches(splits_want: str) -> list[dict]:
 
 
 def plan_neutral_batches() -> list[dict]:
+    """Legacy 50-prompt single-story neutral set."""
     return [
         {
             "kind": "neutral",
@@ -751,6 +901,25 @@ def plan_neutral_batches() -> list[dict]:
             "tag": neutral_tag(p_idx),
         }
         for p_idx in range(len(NEUTRAL_PROMPTS))
+    ]
+
+
+def plan_neutral_dialogue_batches() -> list[dict]:
+    """Sofroniew-style neutral dialogue plan: one n=5 batch per
+    emotional-corpus topic. 100 topics × 5 dialogues = 500 dialogues.
+    The same plan is used for both neutral_no_thinking and
+    neutral_thinking — the corpus name controls thinking flag and
+    output dir, not the plan."""
+    return [
+        {
+            "kind": "neutral_dialogue",
+            "topic_idx": t_idx,
+            "split": "train",
+            "n_stories": NEUTRAL_DIALOGUES_PER_TOPIC,
+            "topic_text": TOPICS[t_idx],
+            "tag": batch_tag("neutral", t_idx, "train"),
+        }
+        for t_idx in range(NUM_TOPICS)
     ]
 
 
@@ -765,10 +934,18 @@ def main():
     LOG_PATH = corpus_dir / "generate.log"
     cleanup_stale_tmp_files(corpus_dir)
 
-    thinking = (corpus == "thinking")
+    # Thinking flag: True for the emotional `thinking` corpus AND for
+    # the neutral_thinking dialogue corpus (so the model emits its
+    # <|channel>thought<channel|>... structure that we'll phase-split
+    # in extraction). neutral_no_thinking and the legacy `neutral` set
+    # run with thinking off.
+    thinking = corpus in ("thinking", "neutral_thinking")
+    is_dialogue = corpus in ("neutral_no_thinking", "neutral_thinking")
 
     if corpus == "neutral":
         full_plan = plan_neutral_batches()
+    elif is_dialogue:
+        full_plan = plan_neutral_dialogue_batches()
     else:
         full_plan = plan_emotion_batches(args.splits)
 
@@ -835,6 +1012,12 @@ def main():
             if b["kind"] == "neutral":
                 user_msg = b["prompt"]
                 seed_parts = ("neutral", b["topic_idx"], b["split"])
+            elif b["kind"] == "neutral_dialogue":
+                user_msg = NEUTRAL_DIALOGUE_PROMPT_TEMPLATE.format(
+                    n_stories=b["n_stories"],
+                    topic=b["topic_text"],
+                )
+                seed_parts = ("neutral_dialogue", b["topic_idx"], b["split"])
             else:
                 user_msg = STORY_PROMPT_TEMPLATE.format(
                     n_stories=b["n_stories"],
@@ -900,12 +1083,15 @@ def main():
                     gen_ids, skip_special_tokens=True,
                 ).strip()
 
-            # Parse stories from the reply portion.
-            stories = parse_batched_stories(reply_text, b["n_stories"])
-            if stories is None:
+            # Parse stories or dialogues from the reply portion.
+            if b["kind"] == "neutral_dialogue":
+                parsed_items = parse_batched_dialogues(reply_text, b["n_stories"])
+            else:
+                parsed_items = parse_batched_stories(reply_text, b["n_stories"])
+            if parsed_items is None:
                 log(
                     f"[{i}/{len(todo)}] {b['tag']}: REJECT "
-                    f"(parser failed; expected {b['n_stories']} stories)"
+                    f"(parser failed; expected {b['n_stories']} {'dialogues' if b['kind']=='neutral_dialogue' else 'stories'})"
                 )
                 failed_parse += 1
                 save_batch(batch_path(corpus_dir, b["tag"]), {
@@ -924,6 +1110,14 @@ def main():
                 })
                 continue
 
+            # For neutral dialogues, post-hoc rename Person:/AI: →
+            # Human:/Assistant: per spec. Stored in the same `stories`
+            # field for downstream consistency.
+            if b["kind"] == "neutral_dialogue":
+                stories = [rename_speakers(d) for d in parsed_items]
+            else:
+                stories = parsed_items
+
             # Pre-registered synonym filter: per-story leak labels. Apply
             # only to emotion corpora (neutral has no emotion to filter
             # against). Stories are KEPT regardless — leaks are research
@@ -936,13 +1130,18 @@ def main():
                 leaks_per_story = [[] for _ in stories]
             n_clean = sum(1 for L in leaks_per_story if not L)
 
+            # Resolve `topic` for the JSON payload across all kinds.
+            if b["kind"] == "emotion":
+                payload_topic = TOPICS[b["topic_idx"]]
+            elif b["kind"] == "neutral_dialogue":
+                payload_topic = b.get("topic_text", "")
+            else:
+                payload_topic = b.get("prompt") or ""
+
             payload = {
                 **{k: v for k, v in b.items() if k != "tag"},
                 "tag": b["tag"],
-                "topic": (
-                    TOPICS[b["topic_idx"]] if b["kind"] == "emotion"
-                    else (b.get("prompt") or "")
-                ),
+                "topic": payload_topic,
                 "thinking": thinking,
                 "seed": seed,
                 "model_id": MODEL_ID,
@@ -971,6 +1170,7 @@ def main():
                 "thought": thought_text,
                 "stories": stories,
                 "filter_pre_registration_commit": "6cf25bf9952126dd84d1bcac910b933988c62539",
+                "topic_split_pre_registration_commit": "8a6f5f7b6da8be8e3402c0d593ac3096841e83b1",
                 "contains_emotion_word_per_story": leaks_per_story,
                 "n_stories_clean": n_clean,
                 "parse_status": "ok",

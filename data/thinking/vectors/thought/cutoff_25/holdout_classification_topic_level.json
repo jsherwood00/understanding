@@ -1,0 +1,384 @@
+{
+  "13": {
+    "n": 238,
+    "accuracy": 0.5042016806722689,
+    "per_class": {
+      "joy": {
+        "precision": 0.43956043956043955,
+        "recall": 1.0,
+        "n_true": 40
+      },
+      "sadness": {
+        "precision": 1.0,
+        "recall": 0.10256410256410256,
+        "n_true": 39
+      },
+      "anger": {
+        "precision": 0.9523809523809523,
+        "recall": 0.5,
+        "n_true": 40
+      },
+      "fear": {
+        "precision": 0.9285714285714286,
+        "recall": 0.325,
+        "n_true": 40
+      },
+      "surprise": {
+        "precision": 1.0,
+        "recall": 0.07692307692307693,
+        "n_true": 39
+      },
+      "disgust": {
+        "precision": 0.38095238095238093,
+        "recall": 1.0,
+        "n_true": 40
+      }
+    },
+    "confusion": {
+      "anger": {
+        "disgust": 17,
+        "anger": 20,
+        "joy": 3
+      },
+      "disgust": {
+        "disgust": 40
+      },
+      "fear": {
+        "fear": 13,
+        "disgust": 20,
+        "joy": 7
+      },
+      "joy": {
+        "joy": 40
+      },
+      "sadness": {
+        "disgust": 16,
+        "joy": 18,
+        "sadness": 4,
+        "anger": 1
+      },
+      "surprise": {
+        "joy": 23,
+        "surprise": 3,
+        "fear": 1,
+        "disgust": 12
+      }
+    }
+  },
+  "17": {
+    "n": 238,
+    "accuracy": 0.35714285714285715,
+    "per_class": {
+      "joy": {
+        "precision": 0.578125,
+        "recall": 0.925,
+        "n_true": 40
+      },
+      "sadness": {
+        "precision": 0.2345679012345679,
+        "recall": 0.9743589743589743,
+        "n_true": 39
+      },
+      "anger": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "fear": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "surprise": {
+        "precision": 0.9090909090909091,
+        "recall": 0.2564102564102564,
+        "n_true": 39
+      },
+      "disgust": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      }
+    },
+    "confusion": {
+      "anger": {
+        "sadness": 37,
+        "joy": 3
+      },
+      "disgust": {
+        "sadness": 34,
+        "joy": 5,
+        "anger": 1
+      },
+      "fear": {
+        "sadness": 36,
+        "joy": 3,
+        "surprise": 1
+      },
+      "joy": {
+        "joy": 37,
+        "sadness": 3
+      },
+      "sadness": {
+        "sadness": 38,
+        "joy": 1
+      },
+      "surprise": {
+        "surprise": 10,
+        "sadness": 14,
+        "joy": 15
+      }
+    }
+  },
+  "21": {
+    "n": 238,
+    "accuracy": 0.19327731092436976,
+    "per_class": {
+      "joy": {
+        "precision": 0.5714285714285714,
+        "recall": 0.1,
+        "n_true": 40
+      },
+      "sadness": {
+        "precision": 0.17488789237668162,
+        "recall": 1.0,
+        "n_true": 39
+      },
+      "anger": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "fear": {
+        "precision": 0.375,
+        "recall": 0.075,
+        "n_true": 40
+      },
+      "surprise": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 39
+      },
+      "disgust": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      }
+    },
+    "confusion": {
+      "anger": {
+        "sadness": 38,
+        "fear": 2
+      },
+      "disgust": {
+        "sadness": 38,
+        "fear": 1,
+        "joy": 1
+      },
+      "fear": {
+        "sadness": 37,
+        "fear": 3
+      },
+      "joy": {
+        "sadness": 36,
+        "joy": 4
+      },
+      "sadness": {
+        "sadness": 39
+      },
+      "surprise": {
+        "sadness": 35,
+        "fear": 2,
+        "joy": 2
+      }
+    }
+  },
+  "25": {
+    "n": 238,
+    "accuracy": 0.2184873949579832,
+    "per_class": {
+      "joy": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "sadness": {
+        "precision": 0.1935483870967742,
+        "recall": 0.9230769230769231,
+        "n_true": 39
+      },
+      "anger": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "fear": {
+        "precision": 0.29411764705882354,
+        "recall": 0.375,
+        "n_true": 40
+      },
+      "surprise": {
+        "precision": 1.0,
+        "recall": 0.02564102564102564,
+        "n_true": 39
+      },
+      "disgust": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      }
+    },
+    "confusion": {
+      "anger": {
+        "sadness": 30,
+        "fear": 10
+      },
+      "disgust": {
+        "sadness": 33,
+        "fear": 7
+      },
+      "fear": {
+        "fear": 15,
+        "sadness": 25
+      },
+      "joy": {
+        "sadness": 36,
+        "fear": 4
+      },
+      "sadness": {
+        "sadness": 36,
+        "fear": 3
+      },
+      "surprise": {
+        "fear": 12,
+        "sadness": 26,
+        "surprise": 1
+      }
+    }
+  },
+  "28": {
+    "n": 238,
+    "accuracy": 0.19327731092436976,
+    "per_class": {
+      "joy": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "sadness": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 39
+      },
+      "anger": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "fear": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "surprise": {
+        "precision": 0.5454545454545454,
+        "recall": 0.15384615384615385,
+        "n_true": 39
+      },
+      "disgust": {
+        "precision": 0.1762114537444934,
+        "recall": 1.0,
+        "n_true": 40
+      }
+    },
+    "confusion": {
+      "anger": {
+        "disgust": 40
+      },
+      "disgust": {
+        "disgust": 40
+      },
+      "fear": {
+        "disgust": 39,
+        "surprise": 1
+      },
+      "joy": {
+        "disgust": 36,
+        "surprise": 4
+      },
+      "sadness": {
+        "disgust": 39
+      },
+      "surprise": {
+        "surprise": 6,
+        "disgust": 33
+      }
+    }
+  },
+  "32": {
+    "n": 238,
+    "accuracy": 0.47478991596638653,
+    "per_class": {
+      "joy": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "sadness": {
+        "precision": 0.6181818181818182,
+        "recall": 0.8717948717948718,
+        "n_true": 39
+      },
+      "anger": {
+        "precision": 1.0,
+        "recall": 0.1,
+        "n_true": 40
+      },
+      "fear": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "n_true": 40
+      },
+      "surprise": {
+        "precision": 0.4931506849315068,
+        "recall": 0.9230769230769231,
+        "n_true": 39
+      },
+      "disgust": {
+        "precision": 0.36792452830188677,
+        "recall": 0.975,
+        "n_true": 40
+      }
+    },
+    "confusion": {
+      "anger": {
+        "disgust": 26,
+        "surprise": 9,
+        "anger": 4,
+        "sadness": 1
+      },
+      "disgust": {
+        "disgust": 39,
+        "surprise": 1
+      },
+      "fear": {
+        "disgust": 21,
+        "surprise": 17,
+        "sadness": 2
+      },
+      "joy": {
+        "sadness": 18,
+        "disgust": 12,
+        "surprise": 10
+      },
+      "sadness": {
+        "sadness": 34,
+        "disgust": 5
+      },
+      "surprise": {
+        "surprise": 36,
+        "disgust": 3
+      }
+    }
+  }
+}

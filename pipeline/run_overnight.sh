@@ -32,12 +32,15 @@ python -m pipeline.generate_stories --corpus no_thinking
 phase "GEN-2 — thinking corpus (train + holdout)"
 python -m pipeline.generate_stories --corpus thinking
 
-phase "GEN-3 — neutral set (50 prompts, n=1)"
-python -m pipeline.generate_stories --corpus neutral
+phase "GEN-3a — neutral_no_thinking dialogues (Sofroniew template, n=5/topic, 100 topics)"
+python -m pipeline.generate_stories --corpus neutral_no_thinking
+
+phase "GEN-3b — neutral_thinking dialogues (thinking on, n=5/topic, 100 topics)"
+python -m pipeline.generate_stories --corpus neutral_thinking
 
 # Extraction can run after each gen phase to start producing activations
 # sooner — but it needs the GPU exclusive of generation. Easiest is to
-# do all gen first, then all extract. ~30 min total for all three.
+# do all gen first, then all extract.
 
 phase "EXT-1 — no_thinking per-token activations"
 python -m pipeline.extract_activations --corpus no_thinking
@@ -45,12 +48,15 @@ python -m pipeline.extract_activations --corpus no_thinking
 phase "EXT-2 — thinking per-token activations (story + thought NPZs)"
 python -m pipeline.extract_activations --corpus thinking
 
-phase "EXT-3 — neutral per-token activations (for PCA basis)"
-python -m pipeline.extract_activations --corpus neutral
+phase "EXT-3a — neutral_no_thinking activations (V1 PCA basis)"
+python -m pipeline.extract_activations --corpus neutral_no_thinking
+
+phase "EXT-3b — neutral_thinking activations (V2/V3 PCA bases — thought + reply)"
+python -m pipeline.extract_activations --corpus neutral_thinking
 
 echo
 echo "[$(date +%Y-%m-%dT%H:%M:%S)] all generation + extraction done."
-echo "next (CPU only, fast): python -m pipeline.compute_vectors"
-echo "                        python -m pipeline.compute_vectors --include-leaky"
-echo "                        python -m pipeline.validation --corpus no_thinking --all"
-echo "                        python -m pipeline.validation --corpus thinking --all"
+echo "next (CPU only, fast):"
+echo "  python -m pipeline.compute_vectors"
+echo "  python -m pipeline.validation --corpus no_thinking --all"
+echo "  python -m pipeline.validation --corpus thinking --all"

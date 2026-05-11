@@ -24,6 +24,10 @@ interface BackendTokenEvent {
   text: string;
   thinking: Record<string, Record<string, number>>;
   step: number;
+  /** "thought" while the model is inside its <|channel>thought... block,
+   *  "reply" once it crosses the <channel|> marker. Older backends that
+   *  haven't been updated may omit this — treat as "reply". */
+  phase?: "thought" | "reply";
 }
 interface BackendDoneEvent {
   type: "done";
@@ -97,6 +101,7 @@ export function Workspace() {
   const [input, setInput] = useState("");
   const [isGenerating, setIsGenerating] = useState(false);
   const [streamingContent, setStreamingContent] = useState<string | null>(null);
+  const [streamingThought, setStreamingThought] = useState<string | null>(null);
   const [rawBars, setRawBars] = useState<RawState>(BASELINE_RAW_STATE);
   const [error, setError] = useState<string | null>(null);
   const [selectedLayer, setSelectedLayer] = useState<Layer>(DEFAULT_LAYER);
@@ -215,6 +220,7 @@ export function Workspace() {
     setInput("");
     setIsGenerating(true);
     setStreamingContent("");
+    setStreamingThought("");
     // Clear the dot — no output reading for this turn yet. Halo carries
     // last value until the first token arrives.
     setRawBars((b) => ({ output: null, thinking: b.thinking }));
@@ -223,7 +229,12 @@ export function Workspace() {
     const controller = new AbortController();
     abortControllerRef.current = controller;
 
-    let accumulatedOutput = "";
+    // Two parallel buffers — `accumulatedReply` is the user-facing answer,
+    // `accumulatedThought` is the model's internal reasoning block (when
+    // thinking is enabled). They're streamed concurrently as token events
+    // arrive, each tagged with a phase by the backend.
+    let accumulatedReply = "";
+    let accumulatedThought = "";
     let layeredThinking: LayeredEmotionValues = makeLayeredBaseline();
     const snapshots: Snapshot[] = [];
     const tokenLog: PerTokenData[] = [];
@@ -279,19 +290,33 @@ export function Workspace() {
           switch (data.type) {
             case "token": {
               tokenCount += 1;
-              accumulatedOutput += data.text;
-              setStreamingContent(accumulatedOutput);
+              const phase = data.phase ?? "reply";
+              if (phase === "thought") {
+                accumulatedThought += data.text;
+                setStreamingThought(accumulatedThought);
+              } else {
+                accumulatedReply += data.text;
+                setStreamingContent(accumulatedReply);
+              }
 
               layeredThinking = mapLayeredBackendEmotions(data.thinking);
               setRawBars({ output: null, thinking: layeredThinking });
 
+              // charEnd is into the buffer for THIS token's phase, so the
+              // scrubber and highlight code can map char positions back
+              // to tokens within their respective texts.
+              const buf =
+                phase === "thought" ? accumulatedThought : accumulatedReply;
               tokenLog.push({
-                charEnd: accumulatedOutput.length,
+                charEnd: buf.length,
                 thinking: layeredThinking,
               });
 
               if (tokenCount % SNAPSHOT_EVERY_N_TOKENS === 0) {
-                const wordCount = accumulatedOutput
+                // Word count anchors the scrubber. Use the combined
+                // (thought + reply) length so the scrubber spans the
+                // whole turn, not just the reply.
+                const wordCount = (accumulatedThought + " " + accumulatedReply)
                   .trim()
                   .split(/\s+/)
                   .filter(Boolean).length;
@@ -304,17 +329,20 @@ export function Workspace() {
             }
             case "done": {
               completed = true;
-              const fullText = data.fullText ?? accumulatedOutput;
+              const fullReply = accumulatedReply;
+              const thoughtText = accumulatedThought;
 
               setMessages((m) => [
                 ...m,
                 {
                   id: crypto.randomUUID(),
                   role: "assistant",
-                  content: fullText,
+                  content: fullReply,
+                  thought: thoughtText || undefined,
                 },
               ]);
               setStreamingContent(null);
+              setStreamingThought(null);
 
               // Final halo = average projection across every token in
               // this turn, not the last token's value. The last-token
@@ -327,15 +355,20 @@ export function Workspace() {
 
               setRawBars({ output: null, thinking: finalThinking });
 
-              const wordCount = fullText.trim().split(/\s+/).filter(Boolean)
-                .length;
+              const wordCount = (thoughtText + " " + fullReply)
+                .trim()
+                .split(/\s+/)
+                .filter(Boolean).length;
               const finalSnap: Snapshot = {
                 atWord: wordCount,
                 thinking: finalThinking,
               };
               const allSnaps = [...snapshots, finalSnap];
 
-              const outputEmotions = await classifyOutput(fullText);
+              // Post-hoc dot reads the user-facing reply only; the
+              // thinking block is internal scratch and shouldn't drag
+              // the surface emotion classifier in either direction.
+              const outputEmotions = await classifyOutput(fullReply);
               setRawBars({
                 output: outputEmotions,
                 thinking: finalThinking,
@@ -344,7 +377,8 @@ export function Workspace() {
               const newTurn: Turn = {
                 id: crypto.randomUUID(),
                 userMessage: text,
-                assistantReply: fullText,
+                assistantReply: fullReply,
+                assistantThought: thoughtText,
                 snapshots: allSnaps,
                 tokens: tokenLog,
                 state: {
@@ -374,17 +408,23 @@ export function Workspace() {
         );
       }
     } finally {
-      if (!completed && accumulatedOutput.trim().length > 0) {
-        const truncated = `${accumulatedOutput.trim()} […]`;
+      if (!completed && (accumulatedReply.trim().length > 0 || accumulatedThought.trim().length > 0)) {
+        const truncatedReply = accumulatedReply.trim().length > 0
+          ? `${accumulatedReply.trim()} […]`
+          : "";
+        const truncatedThought = accumulatedThought.trim().length > 0
+          ? `${accumulatedThought.trim()} […]`
+          : "";
         setMessages((m) => [
           ...m,
           {
             id: crypto.randomUUID(),
             role: "assistant",
-            content: truncated,
+            content: truncatedReply || "[…]",
+            thought: truncatedThought || undefined,
           },
         ]);
-        const fallbackOutput = await classifyOutput(truncated);
+        const fallbackOutput = await classifyOutput(truncatedReply || truncatedThought);
         // Same averaging behavior on the abort/error fallback path.
         const fallbackThinking = tokenLog.length > 0
           ? averageLayered(tokenLog)
@@ -400,7 +440,8 @@ export function Workspace() {
         const newTurn: Turn = {
           id: crypto.randomUUID(),
           userMessage: text,
-          assistantReply: truncated,
+          assistantReply: truncatedReply,
+          assistantThought: truncatedThought,
           snapshots: snapshots.length > 0 ? [...snapshots] : [fallbackSnap],
           tokens: tokenLog,
           state: { output: fallbackOutput, thinking: fallbackThinking },
@@ -413,6 +454,7 @@ export function Workspace() {
         });
       }
       setStreamingContent(null);
+      setStreamingThought(null);
       setIsGenerating(false);
       abortControllerRef.current = null;
     }
@@ -524,6 +566,7 @@ export function Workspace() {
           onStop={handleStopGeneration}
           isGenerating={isGenerating}
           streamingText={streamingContent}
+          streamingThought={streamingThought}
           error={error}
           onDismissError={() => setError(null)}
         />

@@ -7,6 +7,11 @@ export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  /** Internal-reasoning block emitted by the model before the reply,
+   *  when thinking mode is enabled. Rendered as a collapsible italic
+   *  block above the reply. Undefined for user messages and for replies
+   *  generated without thinking. */
+  thought?: string;
 }
 
 interface ChatPaneProps {
@@ -17,6 +22,9 @@ interface ChatPaneProps {
   onStop: () => void;
   isGenerating: boolean;
   streamingText: string | null;
+  /** Live thought-block content during streaming. Null when the turn
+   *  isn't streaming or when thinking mode is off. */
+  streamingThought: string | null;
   error: string | null;
   onDismissError: () => void;
 }
@@ -29,6 +37,7 @@ export function ChatPane({
   onStop,
   isGenerating,
   streamingText,
+  streamingThought,
   error,
   onDismissError,
 }: ChatPaneProps) {
@@ -48,9 +57,15 @@ export function ChatPane({
 
   const hasStreamingContent =
     streamingText !== null && streamingText.length > 0;
-  const showTypingDots = isGenerating && !hasStreamingContent;
+  const hasStreamingThought =
+    streamingThought !== null && streamingThought.length > 0;
+  const showTypingDots =
+    isGenerating && !hasStreamingContent && !hasStreamingThought;
   const isEmpty =
-    messages.length === 0 && !isGenerating && !streamingText;
+    messages.length === 0 &&
+    !isGenerating &&
+    !streamingText &&
+    !streamingThought;
 
   return (
     <section className="flex h-full min-h-0 flex-col">
@@ -62,12 +77,15 @@ export function ChatPane({
             {messages.map((m) => (
               <MessageBubble key={m.id} message={m} />
             ))}
-            {hasStreamingContent && (
+            {(hasStreamingContent || hasStreamingThought) && (
               <MessageBubble
                 message={{
                   id: "streaming",
                   role: "assistant",
                   content: streamingText ?? "",
+                  thought: hasStreamingThought
+                    ? streamingThought ?? undefined
+                    : undefined,
                 }}
                 streaming
               />
@@ -143,6 +161,19 @@ const MessageBubble = memo(function MessageBubble({
   }
   return (
     <div className="flex max-w-[78%] flex-col items-start gap-2">
+      {message.thought && (
+        <details className="group self-stretch">
+          <summary className="thought-summary cursor-pointer list-none text-[12px] italic text-ink-muted hover:text-ink-soft">
+            {streaming ? "thinking…" : "thoughts"}
+          </summary>
+          <div className="mt-1.5 rounded-md border-l-2 border-ink-faint/40 bg-tint/60 px-3 py-2 font-serif text-[13px] leading-relaxed whitespace-pre-wrap text-ink-muted italic">
+            {message.thought}
+            {streaming && !message.content && (
+              <span className="stream-caret" aria-hidden />
+            )}
+          </div>
+        </details>
+      )}
       <div className="text-[15px] leading-relaxed text-ink">
         <ReactMarkdown
           components={{

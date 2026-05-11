@@ -386,7 +386,10 @@ def parse_args():
     p = argparse.ArgumentParser(description="Extract per-token residuals from a batched corpus.")
     p.add_argument(
         "--corpus",
-        choices=("no_thinking", "thinking", "neutral"),
+        choices=(
+            "no_thinking", "thinking",
+            "neutral", "neutral_no_thinking", "neutral_thinking",
+        ),
         required=True,
     )
     p.add_argument(
