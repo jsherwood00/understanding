@@ -61,13 +61,21 @@ __pycache__/
 /data/no_thinking/batches/
 /data/no_thinking/activations/
 /data/no_thinking/stories/
+/data/no_thinking/extract.log
+/data/no_thinking/generate.log
 /data/thinking/batches/
 /data/thinking/activations/
 /data/thinking/stories/
+/data/thinking/extract.log
+/data/thinking/generate.log
 /data/neutral/batches/
 /data/neutral/activations/
 /data/neutral/stories/
-/data/neutral_no_thinking/batches/
-/data/neutral_no_thinking/activations/
-/data/neutral_thinking/batches/
-/data/neutral_thinking/activations/
+/data/neutral_no_thinking/
+/data/neutral_thinking/
+
+# claude code metadata
+/.claude/
+
+# playwright screenshots saved during UI iteration (not committed)
+/*.png

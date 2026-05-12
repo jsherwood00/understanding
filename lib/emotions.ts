@@ -32,6 +32,17 @@ export const BASELINE: EmotionValues = {
 export const LAYERS = [13, 17, 21, 25, 28, 32] as const;
 export type Layer = (typeof LAYERS)[number];
 
+/** Per-scope "best layer" by 6-way holdout accuracy on the contrastive
+ *  corpus (see data/thinking/vectors/<scope>/cutoff_50/
+ *  holdout_classification_topic_level.json):
+ *    reply   — L25 wins (~54% topic-level accuracy)
+ *    thought — L13 wins (~49% topic-level accuracy)
+ *  Used as the default selection AND rendered in bold in the selector. */
+export const BEST_LAYER: Record<"thought" | "reply", Layer> = {
+  thought: 13,
+  reply: 25,
+};
+
 /** Map of layer → 6-emotion vector. Backend now ships all 6 layers per
  *  token; the frontend stores the full layered shape and picks one to
  *  display so layer-switching is instant. */
@@ -43,41 +54,59 @@ export function makeLayeredBaseline(): LayeredEmotionValues {
   return out;
 }
 
+/** Four indicators per emotion column:
+ *    outputReply     — dot:         NLI sentiment of the reply text
+ *    outputThought   — solid line:  NLI sentiment of the thought block
+ *    thinkingReply   — halo (cloud): residual-projection avg over reply tokens (V3 vectors)
+ *    thinkingThought — dashed line:  residual-projection avg over thought tokens (V2 vectors)
+ *  Activation values are display-ready (one selected layer); sentiments are
+ *  null while a turn is still streaming or absent (no thought block emitted).
+ */
 export interface EmotionState {
-  /** External classifier reading of the full reply, computed once at
-   *  end-of-turn. Null while a turn is still streaming. */
-  output: EmotionValues | null;
-  /** Display-ready thinking values for the *currently selected* layer. */
-  thinking: EmotionValues;
+  outputReply: EmotionValues | null;
+  outputThought: EmotionValues | null;
+  thinkingReply: EmotionValues;
+  thinkingThought: EmotionValues | null;
 }
 
-/** Internal-only state — what the SSE stream actually populates. The
- *  display-ready EmotionState is derived by picking one layer. */
+/** Internal state — what the SSE stream populates. The display-ready
+ *  EmotionState is derived from this by picking one layer. */
 export interface RawState {
-  output: EmotionValues | null;
-  thinking: LayeredEmotionValues;
+  outputReply: EmotionValues | null;
+  outputThought: EmotionValues | null;
+  thinkingReply: LayeredEmotionValues;
+  thinkingThought: LayeredEmotionValues | null;
 }
 
 export const BASELINE_STATE: EmotionState = {
-  output: null,
-  thinking: BASELINE,
+  outputReply: null,
+  outputThought: null,
+  thinkingReply: BASELINE,
+  thinkingThought: null,
 };
 
 export const BASELINE_RAW_STATE: RawState = {
-  output: null,
-  thinking: makeLayeredBaseline(),
+  outputReply: null,
+  outputThought: null,
+  thinkingReply: makeLayeredBaseline(),
+  thinkingThought: null,
 };
 
 export interface Snapshot {
   atWord: number;
-  thinking: LayeredEmotionValues;
+  /** Running halo (reply-token average) at this snapshot. */
+  thinkingReply: LayeredEmotionValues;
+  /** Running dashed line (thought-token average) at this snapshot. Null
+   *  before any thought-phase token has been seen. */
+  thinkingThought: LayeredEmotionValues | null;
 }
 
-/** One generated token: where it ends in the reply (char offset) and the
- *  full layered thinking at that step. Used for highlight-to-analyze
- *  nearest-token mapping. */
+/** One generated token: where it ends in its phase-buffer (char offset),
+ *  which phase the token belongs to, and the layered projection at that
+ *  step (scoped to its phase — V2 for thought, V3 for reply). */
 export interface PerTokenData {
   charEnd: number;
+  phase: "thought" | "reply";
   thinking: LayeredEmotionValues;
 }
 
@@ -85,13 +114,13 @@ export interface Turn {
   id: string;
   userMessage: string;
   assistantReply: string;
-  /** Per-chunk snapshots — for the replay/scrub control. */
+  /** The model's <|channel>thought block. Empty string if thinking was
+   *  off or the model didn't emit one. */
+  assistantThought: string;
   snapshots: Snapshot[];
-  /** Per-token layered thinking — used to compute the halo when the user
-   *  highlights an excerpt of this turn's reply. */
+  /** Per-token data — used to recompute halo / dashed-line when the user
+   *  highlights an excerpt of either the reply or the thought. */
   tokens: PerTokenData[];
-  /** The final RawState at end-of-turn (output dot is null if classifier
-   *  hasn't returned yet, otherwise classified value). */
   state: RawState;
 }
 
@@ -148,4 +177,15 @@ export function averageLayered(
     }
   }
   return out;
+}
+
+/** Average over tokens of a specific phase. Returns null if no tokens of
+ *  that phase were present (e.g. no thought block was emitted). */
+export function averageLayeredForPhase(
+  tokens: PerTokenData[],
+  phase: "thought" | "reply",
+): LayeredEmotionValues | null {
+  const filtered = tokens.filter((t) => t.phase === phase);
+  if (filtered.length === 0) return null;
+  return averageLayered(filtered);
 }

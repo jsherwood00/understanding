@@ -1,18 +1,21 @@
 """
-One-time calibration: build data/vectors/calibration.json.
+One-time calibration: build the per-scope calibration.json under
+data/thinking/vectors/<scope>/cutoff_50/.
 
 Runs ~50 diverse prompts through Gemma 4 E4B, captures the raw projection
-score at every target layer for every generated token, then computes the
-5th/95th percentile per (emotion, layer). Those bounds are the linear
-mapping the live backend uses to convert raw scores into the [0, 100]
-range the bars display.
+score at every target layer for every generated token (against the
+selected scope's vectors), then computes shift-and-scale calibration
+bounds per (emotion, layer). The live backend uses these bounds to map
+raw projection scores into the [0, 100] display range, per scope.
 
 Usage:
-    HF_TOKEN=... .venv/bin/python -m backend.calibrate
+    HF_TOKEN=... .venv/bin/python -m backend.calibrate                # default scope=reply
+    HF_TOKEN=... .venv/bin/python -m backend.calibrate --scope thought
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 import time
@@ -22,10 +25,11 @@ import numpy as np
 import torch
 
 from backend.inference import (
-    CALIBRATION_PATH,
     EMOTIONS,
+    SCOPES,
     TARGET_LAYERS,
     EmotionEngine,
+    calibration_path,
 )
 
 
@@ -112,10 +116,23 @@ assert len(LABELS) == len(PROMPTS), "LABELS and PROMPTS must align"
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--scope",
+        choices=SCOPES,
+        default="reply",
+        help="Which vector scope to calibrate (default: reply).",
+    )
+    args = parser.parse_args()
+    scope: str = args.scope
+    out_path = calibration_path(scope)
+
     torch.manual_seed(SEED)
 
     engine = EmotionEngine()
-    print(f"\n[calibrate] running {len(PROMPTS)} prompts × {MAX_NEW_TOKENS} tokens", flush=True)
+    print(f"\n[calibrate] scope: {scope}", flush=True)
+    print(f"[calibrate] writing to: {out_path}", flush=True)
+    print(f"[calibrate] running {len(PROMPTS)} prompts × {MAX_NEW_TOKENS} tokens", flush=True)
     print(f"[calibrate] target layers: {TARGET_LAYERS}", flush=True)
     print(f"[calibrate] emotions: {EMOTIONS}\n", flush=True)
 
@@ -133,7 +150,7 @@ def main() -> int:
         label = LABELS[i]
         t0 = time.time()
         n_tokens = 0
-        for per_layer in engine.calibration_run(prompt, MAX_NEW_TOKENS):
+        for per_layer in engine.calibration_run(prompt, MAX_NEW_TOKENS, scope=scope):
             n_tokens += 1
             for L, per_emotion in per_layer.items():
                 for emo, val in per_emotion.items():
@@ -205,14 +222,15 @@ def main() -> int:
         "target_layers": TARGET_LAYERS,
         "emotions": EMOTIONS,
         "buckets": BUCKETS,
+        "scope": scope,
     }
 
-    CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = CALIBRATION_PATH.with_suffix(CALIBRATION_PATH.suffix + ".tmp")
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out_path.with_suffix(out_path.suffix + ".tmp")
     with open(tmp, "w") as f:
         json.dump(out, f, indent=2)
-    tmp.replace(CALIBRATION_PATH)
-    print(f"\n[calibrate] wrote {CALIBRATION_PATH}", flush=True)
+    tmp.replace(out_path)
+    print(f"\n[calibrate] wrote {out_path}", flush=True)
     return 0
 
 

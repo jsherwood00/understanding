@@ -86,25 +86,19 @@ async def health():
         "device": str(_engine.device) if _engine else None,
         "target_layers": TARGET_LAYERS,
         "default_layer": DEFAULT_LAYER,
-        "calibrated": bool(_engine and _engine.calibration is not None),
+        "calibrated": {
+            scope: bool(_engine and _engine.calibration.get(scope) is not None)
+            for scope in ("reply", "thought")
+        } if _engine else None,
     }
 
 
 @app.get("/layers")
 async def layers():
-    """Layer metadata for the frontend selector."""
-    labels = {
-        13: "Sensory — emotional content of recent input",
-        17: "Sensory–integrated",
-        21: "Integrated — context being processed",
-        25: "Action–integrated",
-        28: "Action — preparing to express",
-        32: "Output — predicting next token",
-    }
-    return [
-        {"layer": L, "label": labels.get(L, f"layer {L}")}
-        for L in TARGET_LAYERS
-    ]
+    """Layer list for the frontend selector. No semantic labels —
+    interpretive claims about what each layer does are not supported by
+    the evidence we have, so we just expose the raw indices."""
+    return [{"layer": L} for L in TARGET_LAYERS]
 
 
 @app.post("/chat")

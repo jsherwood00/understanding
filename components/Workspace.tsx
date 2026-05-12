@@ -4,7 +4,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   BASELINE,
   BASELINE_RAW_STATE,
+  BEST_LAYER,
   averageLayered,
+  averageLayeredForPhase,
   makeLayeredBaseline,
   mapLayeredBackendEmotions,
   type EmotionState,
@@ -50,7 +52,6 @@ const REPLAY_PER_SNAPSHOT_MS = 220;
 const REPLAY_FINAL_HOLD_MS = 700;
 const SELECTION_MIN_CHARS = 3;
 const SNAPSHOT_EVERY_N_TOKENS = 5;
-const DEFAULT_LAYER: Layer = 21;
 
 async function classifyOutput(text: string): Promise<EmotionValues> {
   try {
@@ -67,33 +68,58 @@ async function classifyOutput(text: string): Promise<EmotionValues> {
   }
 }
 
-/** Find the most recent turn whose assistantReply contains `excerpt`,
- *  and return the per-token data for tokens overlapping that range.
- *  Returns null if no match. */
-function tokensForExcerpt(
-  excerpt: string,
-  turns: Turn[],
-): PerTokenData[] | null {
+interface ExcerptMatch {
+  phase: "thought" | "reply";
+  tokens: PerTokenData[];
+}
+
+/** Find the most recent turn whose reply OR thought contains `excerpt`,
+ *  and return matching tokens + which phase they belong to. Reply is
+ *  checked first (more likely surface), then thought. Returns null if no
+ *  match. Per-token charEnd values are relative to that token's phase
+ *  buffer (set in handleSubmit's token loop), so we only consider tokens
+ *  whose phase matches the matched text. */
+function matchExcerpt(excerpt: string, turns: Turn[]): ExcerptMatch | null {
   for (let i = turns.length - 1; i >= 0; i--) {
     const turn = turns[i];
-    const idx = turn.assistantReply.indexOf(excerpt);
-    if (idx < 0) continue;
-    const start = idx;
-    const end = idx + excerpt.length;
-    const matched: PerTokenData[] = [];
-    let prevEnd = 0;
-    for (const tok of turn.tokens) {
-      const tokStart = prevEnd;
-      const tokEnd = tok.charEnd;
-      // Token range [tokStart, tokEnd) overlaps selection [start, end)
-      if (tokStart < end && tokEnd > start) {
-        matched.push(tok);
-      }
-      prevEnd = tokEnd;
+
+    const replyIdx = turn.assistantReply.indexOf(excerpt);
+    if (replyIdx >= 0) {
+      const matched = tokensInRange(
+        turn.tokens.filter((t) => t.phase === "reply"),
+        replyIdx,
+        replyIdx + excerpt.length,
+      );
+      if (matched.length > 0) return { phase: "reply", tokens: matched };
     }
-    if (matched.length > 0) return matched;
+
+    const thoughtIdx = turn.assistantThought.indexOf(excerpt);
+    if (thoughtIdx >= 0) {
+      const matched = tokensInRange(
+        turn.tokens.filter((t) => t.phase === "thought"),
+        thoughtIdx,
+        thoughtIdx + excerpt.length,
+      );
+      if (matched.length > 0) return { phase: "thought", tokens: matched };
+    }
   }
   return null;
+}
+
+function tokensInRange(
+  tokens: PerTokenData[],
+  start: number,
+  end: number,
+): PerTokenData[] {
+  const matched: PerTokenData[] = [];
+  let prevEnd = 0;
+  for (const tok of tokens) {
+    const tokStart = prevEnd;
+    const tokEnd = tok.charEnd;
+    if (tokStart < end && tokEnd > start) matched.push(tok);
+    prevEnd = tokEnd;
+  }
+  return matched;
 }
 
 export function Workspace() {
@@ -104,7 +130,11 @@ export function Workspace() {
   const [streamingThought, setStreamingThought] = useState<string | null>(null);
   const [rawBars, setRawBars] = useState<RawState>(BASELINE_RAW_STATE);
   const [error, setError] = useState<string | null>(null);
-  const [selectedLayer, setSelectedLayer] = useState<Layer>(DEFAULT_LAYER);
+  // Two independent layer picks — one per scope. Defaults are the
+  // holdout-best layers (L13 for thought, L25 for reply); see BEST_LAYER
+  // in lib/emotions.ts.
+  const [thoughtLayer, setThoughtLayer] = useState<Layer>(BEST_LAYER.thought);
+  const [replyLayer, setReplyLayer] = useState<Layer>(BEST_LAYER.reply);
 
   const [turns, setTurns] = useState<Turn[]>([]);
   const [viewingIndex, setViewingIndex] = useState<number | null>(null);
@@ -112,6 +142,13 @@ export function Workspace() {
   const [isReplaying, setIsReplaying] = useState(false);
 
   const [selectedExcerpt, setSelectedExcerpt] = useState<string | null>(null);
+  const [classifierOn, setClassifierOn] = useState(false);
+  const [valuesOn, setValuesOn] = useState(false);
+  /** Flips true the moment the streaming turn enters its reply phase
+   *  (first reply-phase token arrives). Resets on each new submit. The
+   *  EmotionPanel uses this to gate the diff label so it doesn't read
+   *  meaninglessly negative during the thought-only prefix. */
+  const [replyStarted, setReplyStarted] = useState(false);
 
   const abortControllerRef = useRef<AbortController | null>(null);
   const replayAbortRef = useRef(false);
@@ -148,18 +185,44 @@ export function Workspace() {
       document.removeEventListener("selectionchange", onSelectionChange);
   }, []);
 
-  // Layered thinking averaged over the tokens that produced the selected
-  // excerpt. Recomputed when the selection changes or new turns arrive.
-  const selectionLayered = useMemo<LayeredEmotionValues | null>(() => {
+  // Live NLI sentiment of the selected excerpt — drives the dot (if the
+  // selection is in the reply) or the solid line (if in the thought).
+  // Recomputed when the excerpt or its matched phase changes.
+  const [selectionSentiment, setSelectionSentiment] =
+    useState<EmotionValues | null>(null);
+
+  // Resolve which phase the excerpt lives in (if any) and the layered
+  // average over the matching tokens. The latter drives the halo or
+  // dashed line depending on phase.
+  const excerptMatch = useMemo<{
+    phase: "thought" | "reply";
+    layered: LayeredEmotionValues;
+  } | null>(() => {
     if (!selectedExcerpt) return null;
-    const matched = tokensForExcerpt(selectedExcerpt, turns);
-    return matched ? averageLayered(matched) : null;
+    const match = matchExcerpt(selectedExcerpt, turns);
+    if (!match) return null;
+    return { phase: match.phase, layered: averageLayered(match.tokens) };
   }, [selectedExcerpt, turns]);
 
+  // Trigger NLI re-classification on the excerpt itself when it changes.
+  useEffect(() => {
+    if (!selectedExcerpt || !excerptMatch) {
+      setSelectionSentiment(null);
+      return;
+    }
+    let cancelled = false;
+    void classifyOutput(selectedExcerpt).then((res) => {
+      if (!cancelled) setSelectionSentiment(res);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedExcerpt, excerptMatch]);
+
   // True when the user has dragged the scrubber off the final snapshot.
-  // The final snapshot is the only one whose bar reading represents the
-  // turn-as-a-whole; mid-scrub readings are per-chunk, so the post-hoc
-  // dot (which is a turn-as-a-whole reading) doesn't apply there.
+  // Mid-scrub readings are per-chunk; the post-hoc sentiment indicators
+  // (dot + solid line) are turn-as-a-whole readings, so they don't apply
+  // there.
   const isAtNonFinalSnap = useMemo(() => {
     if (viewingIndex === null) return false;
     const turn = turns[viewingIndex];
@@ -168,27 +231,45 @@ export function Workspace() {
   }, [viewingIndex, snapshotIndex, turns]);
 
   const displayedBars = useMemo<EmotionState>(() => {
-    if (selectedExcerpt) {
-      // Halo: average residual-stream projection at the selected layer
-      // over the tokens generated for this excerpt. If the excerpt isn't
-      // in any reply (e.g. user message), halo sits at baseline.
-      const haloValues = selectionLayered
-        ? selectionLayered[selectedLayer]
-        : { ...BASELINE };
+    const baseReply =
+      rawBars.thinkingReply[replyLayer] ?? { ...BASELINE };
+    const baseThought =
+      rawBars.thinkingThought?.[thoughtLayer] ?? null;
 
-      // Dot stays put — it's the post-hoc reading of the whole turn,
-      // not of the selection. Highlighting moves the halo only.
-      return { output: rawBars.output, thinking: haloValues };
+    if (selectedExcerpt && excerptMatch) {
+      // Move the indicator belonging to the matched phase, at that
+      // phase's selected layer. Other phase's indicator stays put.
+      if (excerptMatch.phase === "reply") {
+        const movedLayered = excerptMatch.layered[replyLayer];
+        return {
+          outputReply: selectionSentiment ?? rawBars.outputReply,
+          outputThought: rawBars.outputThought,
+          thinkingReply: movedLayered,
+          thinkingThought: baseThought,
+        };
+      }
+      const movedLayered = excerptMatch.layered[thoughtLayer];
+      return {
+        outputReply: rawBars.outputReply,
+        outputThought: selectionSentiment ?? rawBars.outputThought,
+        thinkingReply: baseReply,
+        thinkingThought: movedLayered,
+      };
     }
+
     return {
-      output: isAtNonFinalSnap ? null : rawBars.output,
-      thinking: rawBars.thinking[selectedLayer],
+      outputReply: isAtNonFinalSnap ? null : rawBars.outputReply,
+      outputThought: isAtNonFinalSnap ? null : rawBars.outputThought,
+      thinkingReply: baseReply,
+      thinkingThought: baseThought,
     };
   }, [
     selectedExcerpt,
-    selectionLayered,
+    excerptMatch,
+    selectionSentiment,
     rawBars,
-    selectedLayer,
+    thoughtLayer,
+    replyLayer,
     isAtNonFinalSnap,
   ]);
 
@@ -200,8 +281,12 @@ export function Workspace() {
         Math.max(0, Math.min(snapIdx, turn.snapshots.length - 1))
       ];
     setRawBars({
-      output: turn.state.output,
-      thinking: snap ? snap.thinking : turn.state.thinking,
+      outputReply: turn.state.outputReply,
+      outputThought: turn.state.outputThought,
+      thinkingReply: snap ? snap.thinkingReply : turn.state.thinkingReply,
+      thinkingThought: snap
+        ? snap.thinkingThought
+        : turn.state.thinkingThought,
     });
   }
 
@@ -219,11 +304,17 @@ export function Workspace() {
     setMessages(nextMessages);
     setInput("");
     setIsGenerating(true);
+    setReplyStarted(false);
     setStreamingContent("");
     setStreamingThought("");
-    // Clear the dot — no output reading for this turn yet. Halo carries
-    // last value until the first token arrives.
-    setRawBars((b) => ({ output: null, thinking: b.thinking }));
+    // Clear both NLI readings — no post-hoc sentiment for this turn yet.
+    // Activation halos carry their last value until the first token arrives.
+    setRawBars((b) => ({
+      outputReply: null,
+      outputThought: null,
+      thinkingReply: b.thinkingReply,
+      thinkingThought: b.thinkingThought,
+    }));
     setError(null);
 
     const controller = new AbortController();
@@ -231,11 +322,14 @@ export function Workspace() {
 
     // Two parallel buffers — `accumulatedReply` is the user-facing answer,
     // `accumulatedThought` is the model's internal reasoning block (when
-    // thinking is enabled). They're streamed concurrently as token events
-    // arrive, each tagged with a phase by the backend.
+    // thinking is enabled). Both stream concurrently as token events
+    // arrive, each tagged with a phase by the backend. The activation
+    // projection that arrives with each token is already scoped to its
+    // phase (V3 for reply, V2 for thought).
     let accumulatedReply = "";
     let accumulatedThought = "";
-    let layeredThinking: LayeredEmotionValues = makeLayeredBaseline();
+    let layeredReply: LayeredEmotionValues = makeLayeredBaseline();
+    let layeredThought: LayeredEmotionValues | null = null;
     const snapshots: Snapshot[] = [];
     const tokenLog: PerTokenData[] = [];
     let completed = false;
@@ -295,34 +389,60 @@ export function Workspace() {
                 accumulatedThought += data.text;
                 setStreamingThought(accumulatedThought);
               } else {
+                if (accumulatedReply.length === 0) {
+                  setReplyStarted(true);
+                  // First reply token — collapse the live thought halo
+                  // into the whole-thought-block average so the
+                  // visualization settles before the reply phase begins
+                  // (instead of leaving the halo at the last-thought-
+                  // token reading, which is point-in-time noise).
+                  const thoughtAvg = averageLayeredForPhase(
+                    tokenLog,
+                    "thought",
+                  );
+                  if (thoughtAvg !== null) layeredThought = thoughtAvg;
+                }
                 accumulatedReply += data.text;
                 setStreamingContent(accumulatedReply);
               }
 
-              layeredThinking = mapLayeredBackendEmotions(data.thinking);
-              setRawBars({ output: null, thinking: layeredThinking });
+              const tokenLayered = mapLayeredBackendEmotions(data.thinking);
+              if (phase === "thought") {
+                layeredThought = tokenLayered;
+              } else {
+                layeredReply = tokenLayered;
+              }
+              setRawBars({
+                outputReply: null,
+                outputThought: null,
+                thinkingReply: layeredReply,
+                thinkingThought: layeredThought,
+              });
 
-              // charEnd is into the buffer for THIS token's phase, so the
+              // charEnd is into the buffer for THIS token's phase so the
               // scrubber and highlight code can map char positions back
               // to tokens within their respective texts.
               const buf =
                 phase === "thought" ? accumulatedThought : accumulatedReply;
               tokenLog.push({
                 charEnd: buf.length,
-                thinking: layeredThinking,
+                phase,
+                thinking: tokenLayered,
               });
 
               if (tokenCount % SNAPSHOT_EVERY_N_TOKENS === 0) {
-                // Word count anchors the scrubber. Use the combined
-                // (thought + reply) length so the scrubber spans the
-                // whole turn, not just the reply.
                 const wordCount = (accumulatedThought + " " + accumulatedReply)
                   .trim()
                   .split(/\s+/)
                   .filter(Boolean).length;
+                // Snapshot the running per-phase averages, not the
+                // single most-recent token — keeps the scrubber smooth.
                 snapshots.push({
                   atWord: wordCount,
-                  thinking: layeredThinking,
+                  thinkingReply:
+                    averageLayeredForPhase(tokenLog, "reply") ??
+                    makeLayeredBaseline(),
+                  thinkingThought: averageLayeredForPhase(tokenLog, "thought"),
                 });
               }
               break;
@@ -344,16 +464,21 @@ export function Workspace() {
               setStreamingContent(null);
               setStreamingThought(null);
 
-              // Final halo = average projection across every token in
-              // this turn, not the last token's value. The last-token
-              // reading is noisy / point-in-time; the average is a
-              // holistic measure of the model's internal state across
-              // generating the whole response.
-              const finalThinking = tokenLog.length > 0
-                ? averageLayered(tokenLog)
-                : layeredThinking;
+              // Per-phase activation averages over every token in the
+              // turn (not just the last). Last-token readings are noisy
+              // / point-in-time; the average gives a holistic measure
+              // of internal state across each phase.
+              const finalReplyActs =
+                averageLayeredForPhase(tokenLog, "reply") ?? layeredReply;
+              const finalThoughtActs =
+                averageLayeredForPhase(tokenLog, "thought");
 
-              setRawBars({ output: null, thinking: finalThinking });
+              setRawBars({
+                outputReply: null,
+                outputThought: null,
+                thinkingReply: finalReplyActs,
+                thinkingThought: finalThoughtActs,
+              });
 
               const wordCount = (thoughtText + " " + fullReply)
                 .trim()
@@ -361,17 +486,24 @@ export function Workspace() {
                 .filter(Boolean).length;
               const finalSnap: Snapshot = {
                 atWord: wordCount,
-                thinking: finalThinking,
+                thinkingReply: finalReplyActs,
+                thinkingThought: finalThoughtActs,
               };
               const allSnaps = [...snapshots, finalSnap];
 
-              // Post-hoc dot reads the user-facing reply only; the
-              // thinking block is internal scratch and shouldn't drag
-              // the surface emotion classifier in either direction.
-              const outputEmotions = await classifyOutput(fullReply);
+              // Post-hoc NLI on both the reply (drives the dot) and the
+              // thought block (drives the solid line). Done in parallel.
+              const [replySentiment, thoughtSentiment] = await Promise.all([
+                classifyOutput(fullReply),
+                thoughtText.trim().length > 0
+                  ? classifyOutput(thoughtText)
+                  : Promise.resolve<EmotionValues | null>(null),
+              ]);
               setRawBars({
-                output: outputEmotions,
-                thinking: finalThinking,
+                outputReply: replySentiment,
+                outputThought: thoughtSentiment,
+                thinkingReply: finalReplyActs,
+                thinkingThought: finalThoughtActs,
               });
 
               const newTurn: Turn = {
@@ -382,8 +514,10 @@ export function Workspace() {
                 snapshots: allSnaps,
                 tokens: tokenLog,
                 state: {
-                  output: outputEmotions,
-                  thinking: finalThinking,
+                  outputReply: replySentiment,
+                  outputThought: thoughtSentiment,
+                  thinkingReply: finalReplyActs,
+                  thinkingThought: finalThoughtActs,
                 },
               };
               setTurns((t) => {
@@ -424,18 +558,28 @@ export function Workspace() {
             thought: truncatedThought || undefined,
           },
         ]);
-        const fallbackOutput = await classifyOutput(truncatedReply || truncatedThought);
-        // Same averaging behavior on the abort/error fallback path.
-        const fallbackThinking = tokenLog.length > 0
-          ? averageLayered(tokenLog)
-          : layeredThinking;
+        const [fallbackReplySentiment, fallbackThoughtSentiment] = await Promise.all([
+          truncatedReply.length > 0
+            ? classifyOutput(truncatedReply)
+            : Promise.resolve<EmotionValues | null>(null),
+          truncatedThought.length > 0
+            ? classifyOutput(truncatedThought)
+            : Promise.resolve<EmotionValues | null>(null),
+        ]);
+        const fallbackReplyActs =
+          averageLayeredForPhase(tokenLog, "reply") ?? layeredReply;
+        const fallbackThoughtActs =
+          averageLayeredForPhase(tokenLog, "thought");
         setRawBars({
-          output: fallbackOutput,
-          thinking: fallbackThinking,
+          outputReply: fallbackReplySentiment,
+          outputThought: fallbackThoughtSentiment,
+          thinkingReply: fallbackReplyActs,
+          thinkingThought: fallbackThoughtActs,
         });
         const fallbackSnap: Snapshot = {
           atWord: 0,
-          thinking: fallbackThinking,
+          thinkingReply: fallbackReplyActs,
+          thinkingThought: fallbackThoughtActs,
         };
         const newTurn: Turn = {
           id: crypto.randomUUID(),
@@ -444,7 +588,12 @@ export function Workspace() {
           assistantThought: truncatedThought,
           snapshots: snapshots.length > 0 ? [...snapshots] : [fallbackSnap],
           tokens: tokenLog,
-          state: { output: fallbackOutput, thinking: fallbackThinking },
+          state: {
+            outputReply: fallbackReplySentiment,
+            outputThought: fallbackThoughtSentiment,
+            thinkingReply: fallbackReplyActs,
+            thinkingThought: fallbackThoughtActs,
+          },
         };
         setTurns((t) => {
           const next = [...t, newTurn];
@@ -495,7 +644,12 @@ export function Workspace() {
       if (replayAbortRef.current) break;
       const snap = turn.snapshots[i];
       setSnapshotIndex(i);
-      setRawBars({ output: turn.state.output, thinking: snap.thinking });
+      setRawBars({
+        outputReply: turn.state.outputReply,
+        outputThought: turn.state.outputThought,
+        thinkingReply: snap.thinkingReply,
+        thinkingThought: snap.thinkingThought,
+      });
       await sleep(REPLAY_PER_SNAPSHOT_MS);
     }
     await sleep(REPLAY_FINAL_HOLD_MS);
@@ -515,7 +669,12 @@ export function Workspace() {
         if (replayAbortRef.current) break;
         const snap = turn.snapshots[i];
         setSnapshotIndex(i);
-        setRawBars({ output: turn.state.output, thinking: snap.thinking });
+        setRawBars({
+          outputReply: turn.state.outputReply,
+          outputThought: turn.state.outputThought,
+          thinkingReply: snap.thinkingReply,
+          thinkingThought: snap.thinkingThought,
+        });
         await sleep(REPLAY_PER_SNAPSHOT_MS);
       }
       if (!replayAbortRef.current) await sleep(REPLAY_FINAL_HOLD_MS);
@@ -539,7 +698,7 @@ export function Workspace() {
 
   return (
     <>
-      <div className="w-2/5 border-r border-divider">
+      <div className="w-[45%] border-r border-divider">
         <EmotionPanel
           state={displayedBars}
           turns={turns}
@@ -553,11 +712,18 @@ export function Workspace() {
           onStopReplay={handleStopReplay}
           isReplaying={isReplaying}
           isGenerating={isGenerating}
-          selectedLayer={selectedLayer}
-          onLayerChange={setSelectedLayer}
+          thoughtLayer={thoughtLayer}
+          replyLayer={replyLayer}
+          onThoughtLayerChange={setThoughtLayer}
+          onReplyLayerChange={setReplyLayer}
+          classifierOn={classifierOn}
+          onClassifierToggle={setClassifierOn}
+          valuesOn={valuesOn}
+          onValuesToggle={setValuesOn}
+          replyStarted={replyStarted}
         />
       </div>
-      <div className="w-3/5">
+      <div className="w-[55%]">
         <ChatPane
           messages={messages}
           input={input}

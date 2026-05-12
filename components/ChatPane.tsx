@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useRef, type FormEvent } from "react";
+import { memo, useEffect, useRef, useState, type FormEvent } from "react";
 import ReactMarkdown from "react-markdown";
 
 export interface ChatMessage {
@@ -42,12 +42,33 @@ export function ChatPane({
   onDismissError,
 }: ChatPaneProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  // Tracks whether the user is "near bottom" — when they are, new
+  // content auto-scrolls; when they've scrolled up to read, we leave
+  // them where they are.
+  const stickyBottomRef = useRef(true);
 
+  // Listen for user-driven scroll changes and update the stickiness flag.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages, isGenerating, streamingText]);
+    const handler = () => {
+      const distFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickyBottomRef.current = distFromBottom < 40;
+    };
+    el.addEventListener("scroll", handler, { passive: true });
+    return () => el.removeEventListener("scroll", handler);
+  }, []);
+
+  // Auto-scroll on new content — but only when the user was already at
+  // (or near) the bottom. If they've scrolled up to read, we don't yank
+  // them back down.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (stickyBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages, isGenerating, streamingText, streamingThought]);
 
   function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
@@ -162,17 +183,12 @@ const MessageBubble = memo(function MessageBubble({
   return (
     <div className="flex max-w-[78%] flex-col items-start gap-2">
       {message.thought && (
-        <details className="group self-stretch">
-          <summary className="thought-summary cursor-pointer list-none text-[12px] italic text-ink-muted hover:text-ink-soft">
-            {streaming ? "thinking…" : "thoughts"}
-          </summary>
-          <div className="mt-1.5 rounded-md border-l-2 border-ink-faint/40 bg-tint/60 px-3 py-2 font-serif text-[13px] leading-relaxed whitespace-pre-wrap text-ink-muted italic">
-            {message.thought}
-            {streaming && !message.content && (
-              <span className="stream-caret" aria-hidden />
-            )}
-          </div>
-        </details>
+        <ThoughtDisclosure streaming={streaming}>
+          {message.thought}
+          {streaming && !message.content && (
+            <span className="stream-caret" aria-hidden />
+          )}
+        </ThoughtDisclosure>
       )}
       <div className="text-[15px] leading-relaxed text-ink">
         <ReactMarkdown
@@ -235,6 +251,35 @@ const MessageBubble = memo(function MessageBubble({
     </div>
   );
 });
+
+/** Collapsible thoughts panel. Opens by default so the user can read the
+ *  model's reasoning as it streams; toggle state is owned by component-
+ *  local React state so manual clicks stick (the prop-driven `open` would
+ *  get re-applied on every re-render and ignore the user's toggle).
+ *  Resets to open whenever the bubble is re-mounted (i.e. a new turn). */
+function ThoughtDisclosure({
+  streaming = false,
+  children,
+}: {
+  streaming?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <details
+      className="group self-stretch"
+      open={open}
+      onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
+    >
+      <summary className="thought-summary cursor-pointer list-none text-[12px] italic text-ink-muted hover:text-ink-soft">
+        {streaming ? "thinking…" : "thoughts"}
+      </summary>
+      <div className="mt-1.5 rounded-md border-l-2 border-ink-faint/40 bg-tint/60 px-3 py-2 font-serif text-[13px] leading-relaxed whitespace-pre-wrap text-ink-muted italic">
+        {children}
+      </div>
+    </details>
+  );
+}
 
 function StreamingPlaceholder() {
   return (

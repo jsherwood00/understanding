@@ -50,26 +50,52 @@ MAX_TOKENS_PER_SEC = 40.0
 MIN_TOKEN_INTERVAL_S = 1.0 / MAX_TOKENS_PER_SEC
 
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
-VECTORS_DIR = DATA_DIR / "vectors"
-CALIBRATION_PATH = VECTORS_DIR / "calibration.json"
+# Two vector sets, one per phase of Gemma's chat output. We project the
+# residual stream against whichever set matches the phase the model is
+# currently in:
+#   reply phase (after <channel|>)  → V3 reply-scope vectors (the halo)
+#   thought phase (inside channel)  → V2 thought-scope vectors (the dashed line)
+# Both come from the overnight contrastive run (commit 79970e4); V3 was
+# the strongest single result at 53.6% topic-level-holdout accuracy.
+SCOPES: tuple[str, ...] = ("reply", "thought")
+
+
+def vectors_dir(scope: str) -> Path:
+    return DATA_DIR / "thinking" / "vectors" / scope / "cutoff_50"
+
+
+def calibration_path(scope: str) -> Path:
+    return vectors_dir(scope) / "calibration.json"
+
+
+# Back-compat — `backend.calibrate` historically imported this constant.
+# `backend.calibrate` now picks the path explicitly via `--scope`, so this
+# name remains only for any external callers that still want the default.
+CALIBRATION_PATH = calibration_path("reply")
 
 # Fallback bounds when no calibration file is present. Raw projection scores
 # at the chosen layer are clipped to this range, then linearly mapped to
 # [0, 100]. Calibration replaces this with per-(emotion, layer) p5/p95 bounds.
 FALLBACK_RAW_BOUND = 5.0
 
+# 101 anchor points spanning [0, 100] in 1% steps. Pairs with the
+# 101-element `breakpoints` arrays in percentile_rank calibration files —
+# np.interp(raw, breakpoints, PERCENTILE_GRID) gives the rank.
+PERCENTILE_GRID = np.linspace(0.0, 100.0, 101)
+
 
 # ----------------------------------------------------------------------
 # Vector loading
 # ----------------------------------------------------------------------
 
-def load_vectors(device: torch.device) -> dict[int, torch.Tensor]:
+def load_vectors(scope: str, device: torch.device) -> dict[int, torch.Tensor]:
     """Returns {layer: tensor(6, 2560) on device}, rows ordered by EMOTIONS."""
+    base = vectors_dir(scope)
     out: dict[int, torch.Tensor] = {}
     for L in TARGET_LAYERS:
         rows = []
         for emo in EMOTIONS:
-            path = VECTORS_DIR / f"{emo}_layer_{L}.npy"
+            path = base / f"{emo}_layer_{L}.npy"
             if not path.exists():
                 raise FileNotFoundError(f"missing vector: {path}")
             rows.append(np.load(path).astype(np.float32))
@@ -78,10 +104,11 @@ def load_vectors(device: torch.device) -> dict[int, torch.Tensor]:
     return out
 
 
-def load_calibration() -> Optional[dict]:
-    if not CALIBRATION_PATH.exists():
+def load_calibration(scope: str) -> Optional[dict]:
+    path = calibration_path(scope)
+    if not path.exists():
         return None
-    with open(CALIBRATION_PATH) as f:
+    with open(path) as f:
         return json.load(f)
 
 
@@ -157,21 +184,52 @@ class EmotionEngine:
             flush=True,
         )
 
-        self.vectors = load_vectors(self.device)  # {layer: (6, 2560) tensor}
-        self.calibration = load_calibration()
-        if self.calibration is None:
+        # Per-scope vectors + per-scope calibration. `phase` from generate
+        # picks which scope's bundle to project against on each token.
+        self.vectors: dict[str, dict[int, torch.Tensor]] = {
+            scope: load_vectors(scope, self.device) for scope in SCOPES
+        }
+        self.calibration: dict[str, Optional[dict]] = {
+            scope: load_calibration(scope) for scope in SCOPES
+        }
+        # Pre-decoded breakpoint arrays keyed [scope][layer][emotion] for
+        # percentile_rank calibration. Built from self.calibration so the
+        # hot path in _normalize just looks up a numpy array + np.interp.
+        self._bp_cache: dict[str, dict[int, dict[str, np.ndarray]]] = {}
+        for scope in SCOPES:
+            cal = self.calibration[scope]
+            if cal is None:
+                print(
+                    f"[engine] {scope}: no calibration.json — using fallback "
+                    f"[-{FALLBACK_RAW_BOUND}, +{FALLBACK_RAW_BOUND}] linear map",
+                    flush=True,
+                )
+                continue
+
+            method = cal.get("_meta", {}).get("method", "unknown")
+            n_emotions = sum(1 for k in cal if not k.startswith("_"))
             print(
-                f"[engine] no calibration.json — using fallback "
-                f"[-{FALLBACK_RAW_BOUND}, +{FALLBACK_RAW_BOUND}] linear map",
+                f"[engine] {scope}: loaded calibration for {n_emotions} "
+                f"emotions × {len(TARGET_LAYERS)} layers (method={method})",
                 flush=True,
             )
-        else:
-            n_emotions = sum(1 for k in self.calibration if not k.startswith("_"))
-            print(
-                f"[engine] loaded calibration for {n_emotions} emotions × "
-                f"{len(TARGET_LAYERS)} layers",
-                flush=True,
-            )
+
+            # Build breakpoint cache for the percentile_rank schema.
+            scope_cache: dict[int, dict[str, np.ndarray]] = {}
+            for L in TARGET_LAYERS:
+                layer_cache: dict[str, np.ndarray] = {}
+                for emo in EMOTIONS:
+                    bounds = cal.get(emo, {}).get(str(L))
+                    if not bounds:
+                        continue
+                    bp = bounds.get("breakpoints")
+                    if bp is None or len(bp) != len(PERCENTILE_GRID):
+                        continue
+                    layer_cache[emo] = np.array(bp, dtype=np.float32)
+                if layer_cache:
+                    scope_cache[L] = layer_cache
+            if scope_cache:
+                self._bp_cache[scope] = scope_cache
 
         # Forward hooks at every target layer write the latest output here.
         # Captured shape is the full layer output: (batch, seq_len, 2560).
@@ -199,60 +257,77 @@ class EmotionEngine:
     # Projection + normalization
     # ------------------------------------------------------------------
 
-    def _project(self, layer: int) -> dict[str, float]:
+    def _project(self, scope: str, layer: int) -> dict[str, float]:
         """Raw dot products of last token's residual stream with each emotion
-        vector at `layer`. Returns {emotion: float}."""
+        vector at `layer` under the given scope. Returns {emotion: float}."""
         hidden = self._captured[layer]                # (1, seq_len, 2560)
         last = hidden[0, -1, :].to(torch.float32)     # (2560,)
-        vecs = self.vectors[layer]                    # (6, 2560)
+        vecs = self.vectors[scope][layer]             # (6, 2560)
         scores = (vecs @ last).cpu().numpy()          # (6,)
         return {emo: float(scores[i]) for i, emo in enumerate(EMOTIONS)}
 
     @torch.no_grad()
-    def project_all_layers_raw(self) -> dict[int, dict[str, float]]:
+    def project_all_layers_raw(self, scope: str = "reply") -> dict[int, dict[str, float]]:
         """Raw (un-normalized) projection scores at every target layer for
-        the latest captured token. Used by the calibration script."""
-        return {L: self._project(L) for L in TARGET_LAYERS}
+        the latest captured token, against the given scope's vectors. Used
+        by the calibration script and by generate_stream."""
+        return {L: self._project(scope, L) for L in TARGET_LAYERS}
 
     @torch.no_grad()
-    def calibration_run(self, message: str, max_new_tokens: int = 80):
+    def calibration_run(
+        self, message: str, max_new_tokens: int = 80, scope: str = "reply",
+    ):
         """Sync generator: yields {layer: {emotion: raw_score}} per
-        generated token. Mirrors generate_stream's inner loop without
-        async / SSE / normalize. Used by calibrate.py."""
+        generated token, projected against `scope`'s vectors. Mirrors
+        generate_stream's inner loop without async / SSE / normalize.
+        Used by calibrate.py."""
         input_ids = self._build_prompt(message)
         next_id, past_kv = self._step(input_ids, None, do_sample=True)
         for _ in range(max_new_tokens):
             if next_id in self.stop_token_ids:
                 break
-            yield self.project_all_layers_raw()
+            yield self.project_all_layers_raw(scope=scope)
             next_input = torch.tensor(
                 [[next_id]], dtype=input_ids.dtype, device=self.device,
             )
             next_id, past_kv = self._step(next_input, past_kv, do_sample=True)
 
-    def _normalize(self, raw: dict[str, float], layer: int) -> dict[str, float]:
+    def _normalize(
+        self, raw: dict[str, float], scope: str, layer: int,
+    ) -> dict[str, float]:
         """Map raw projection scores to display range [0, 100].
 
-        Preferred schema (shift_and_scale): pins neutral text to 0 and a
-        high percentile of matching-emotional text to 100. Negative shifted
-        values clip to 0 — "less aligned than neutral" reads as no signal,
-        not as a negative bar.
+        Preferred schema (percentile_rank): the y-axis literally is
+        "what percentile of this emotion's labeled-story per-token
+        projections this value would land at." 101 breakpoints span
+        0%-100% in 1% steps; np.interp gives the rank.
 
-            display = clip(0, 100, (raw - neutral_mean) / scale * 100)
-
-        Fallback schema (percentile_5_95, legacy): linear p5→0, p95→100.
+        Legacy schema (shift_and_scale): linear neutral-mean → 0,
+        emotional-p95 → 100. Kept as fallback so an old calibration.json
+        still works.
         """
         out: dict[str, float] = {}
-        for emo, val in raw.items():
-            bounds = None
-            if self.calibration:
-                bounds = self.calibration.get(emo, {}).get(str(layer))
+        cal = self.calibration.get(scope)
+        cached_bp = self._bp_cache.get(scope, {}).get(layer) if cal else None
 
+        for emo, val in raw.items():
+            # Percentile-rank schema — preferred.
+            if cached_bp is not None and emo in cached_bp:
+                bp = cached_bp[emo]
+                # np.interp clamps to the endpoint values automatically.
+                pct = float(np.interp(val, bp, PERCENTILE_GRID))
+                out[emo] = max(0.0, min(100.0, pct))
+                continue
+
+            bounds = cal.get(emo, {}).get(str(layer)) if cal else None
+
+            # Legacy: shift_and_scale (neutral_mean → 0, p95_emotional → 100).
             if bounds and "neutral_mean" in bounds and "scale" in bounds:
                 shifted = (val - bounds["neutral_mean"]) / bounds["scale"]
                 out[emo] = max(0.0, min(100.0, shifted * 100.0))
                 continue
 
+            # Legacy: per-emotion min/max linear map.
             if bounds and "min" in bounds and "max" in bounds:
                 lo, hi = bounds["min"], bounds["max"]
             else:
@@ -371,11 +446,15 @@ class EmotionEngine:
                     delta = decoded[len(full_text_so_far):]
                     full_text_so_far = decoded
 
-                    # Project + normalize at every target layer. ~10us total
-                    # extra over single-layer projection, negligible.
-                    all_raw = self.project_all_layers_raw()
+                    # Project + normalize at every target layer, against the
+                    # scope (V2 vs V3 vectors) matching this token's phase.
+                    # Thought-phase tokens get the V2 thought-scope reading
+                    # (the dashed line); reply-phase tokens get V3 reply-
+                    # scope (the halo). ~10us total over single-scope,
+                    # single-layer projection, negligible.
+                    all_raw = self.project_all_layers_raw(scope=phase)
                     all_thinking = {
-                        str(L): self._normalize(all_raw[L], L)
+                        str(L): self._normalize(all_raw[L], phase, L)
                         for L in TARGET_LAYERS
                     }
 
