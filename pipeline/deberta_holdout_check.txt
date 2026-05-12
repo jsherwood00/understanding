@@ -1,0 +1,518 @@
+====================================================================================
+DeBERTa-v3-large-zeroshot-v2.0 HOLDOUT-CORPUS CHECK
+====================================================================================
+
+Same method as pipeline/deberta_corpus_check.txt (deberta-v3-large,
+template "This text expresses {}.", multi_label=True), but applied to
+the HOLDOUT corpus, sliced by two flavors:
+  topic_level   — topics 80-99 (entirely held-out topics)
+  within_cell   — topics 0-79, trial-split=holdout (trials 12-14)
+
+For the contrastive comparison, the contrastive vectors were built from
+TRAIN-TOPIC TRAIN-TRIAL files at each set's best raw (L, K) cell — i.e.
+a true generalization test (the holdout stories did NOT contribute to
+the centroids).
+
+Corpus sizes:
+  V1_no_thinking_full: topic-level n=1800, within-cell n=1440, total=3240
+  V2_thinking_thought: topic-level n=238, within-cell n=470, total=708
+  V3_thinking_reply: topic-level n=1785, within-cell n=1410, total=3195
+
+====================================================================================
+V1_no_thinking_full  /  topic_level  — per-target-emotion summary  (n=1800)
+====================================================================================
+
+  joy: 300 texts
+    target conf:   mean=0.969  median=0.993
+    rank of target: mean=1.09
+    target-is-top1: 273/300 = 0.910
+    target-in-top2: 299/300 = 0.997
+    most common wrong top-1 (when top1 != target): surprise (26 stories)
+    full wrong distribution: sadness=0, anger=0, fear=1, disgust=0, surprise=26
+
+  sadness: 300 texts  ⚠ CORPUS QUALITY CONCERN
+    target conf:   mean=0.554  median=0.682
+    rank of target: mean=1.89
+    target-is-top1: 145/300 = 0.483
+    target-in-top2: 223/300 = 0.743
+    most common wrong top-1 (when top1 != target): fear (104 stories)
+    full wrong distribution: joy=0, anger=16, fear=104, disgust=6, surprise=29
+
+  anger: 300 texts
+    target conf:   mean=0.787  median=0.974
+    rank of target: mean=1.58
+    target-is-top1: 197/300 = 0.657
+    target-in-top2: 252/300 = 0.840
+    most common wrong top-1 (when top1 != target): fear (66 stories)
+    full wrong distribution: joy=0, sadness=11, fear=66, disgust=13, surprise=13
+
+  fear: 300 texts
+    target conf:   mean=0.842  median=0.961
+    rank of target: mean=1.29
+    target-is-top1: 235/300 = 0.783
+    target-in-top2: 288/300 = 0.960
+    most common wrong top-1 (when top1 != target): surprise (29 stories)
+    full wrong distribution: joy=0, sadness=17, anger=13, disgust=6, surprise=29
+
+  disgust: 300 texts  ⚠ CORPUS QUALITY CONCERN
+    target conf:   mean=0.595  median=0.803
+    rank of target: mean=2.40
+    target-is-top1: 89/300 = 0.297
+    target-in-top2: 183/300 = 0.610
+    most common wrong top-1 (when top1 != target): fear (102 stories)
+    full wrong distribution: joy=0, sadness=10, anger=78, fear=102, surprise=21
+
+  surprise: 300 texts
+    target conf:   mean=0.688  median=0.880
+    rank of target: mean=1.72
+    target-is-top1: 152/300 = 0.507
+    target-in-top2: 259/300 = 0.863
+    most common wrong top-1 (when top1 != target): fear (111 stories)
+    full wrong distribution: joy=1, sadness=20, anger=14, fear=111, disgust=2
+
+====================================================================================
+V1_no_thinking_full  /  within_cell  — per-target-emotion summary  (n=1440)
+====================================================================================
+
+  joy: 240 texts
+    target conf:   mean=0.961  median=0.996
+    rank of target: mean=1.09
+    target-is-top1: 219/240 = 0.912
+    target-in-top2: 239/240 = 0.996
+    most common wrong top-1 (when top1 != target): surprise (21 stories)
+    full wrong distribution: sadness=0, anger=0, fear=0, disgust=0, surprise=21
+
+  sadness: 240 texts
+    target conf:   mean=0.638  median=0.843
+    rank of target: mean=1.83
+    target-is-top1: 126/240 = 0.525
+    target-in-top2: 183/240 = 0.762
+    most common wrong top-1 (when top1 != target): fear (86 stories)
+    full wrong distribution: joy=0, anger=13, fear=86, disgust=2, surprise=13
+
+  anger: 240 texts
+    target conf:   mean=0.857  median=0.983
+    rank of target: mean=1.46
+    target-is-top1: 164/240 = 0.683
+    target-in-top2: 209/240 = 0.871
+    most common wrong top-1 (when top1 != target): fear (54 stories)
+    full wrong distribution: joy=0, sadness=7, fear=54, disgust=10, surprise=5
+
+  fear: 240 texts
+    target conf:   mean=0.931  median=0.984
+    rank of target: mean=1.13
+    target-is-top1: 215/240 = 0.896
+    target-in-top2: 235/240 = 0.979
+    most common wrong top-1 (when top1 != target): sadness (12 stories)
+    full wrong distribution: joy=0, sadness=12, anger=2, disgust=2, surprise=9
+
+  disgust: 240 texts  ⚠ CORPUS QUALITY CONCERN
+    target conf:   mean=0.698  median=0.931
+    rank of target: mean=2.17
+    target-is-top1: 97/240 = 0.404
+    target-in-top2: 154/240 = 0.642
+    most common wrong top-1 (when top1 != target): fear (78 stories)
+    full wrong distribution: joy=0, sadness=5, anger=50, fear=78, surprise=10
+
+  surprise: 240 texts
+    target conf:   mean=0.733  median=0.918
+    rank of target: mean=1.70
+    target-is-top1: 124/240 = 0.517
+    target-in-top2: 198/240 = 0.825
+    most common wrong top-1 (when top1 != target): fear (88 stories)
+    full wrong distribution: joy=0, sadness=17, anger=8, fear=88, disgust=3
+
+====================================================================================
+V2_thinking_thought  /  topic_level  — per-target-emotion summary  (n=238)
+====================================================================================
+
+  joy: 40 texts
+    target conf:   mean=0.519  median=0.530
+    rank of target: mean=1.00
+    target-is-top1: 40/40 = 1.000
+    target-in-top2: 40/40 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+  sadness: 39 texts
+    target conf:   mean=0.806  median=0.933
+    rank of target: mean=1.00
+    target-is-top1: 39/39 = 1.000
+    target-in-top2: 39/39 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+  anger: 40 texts
+    target conf:   mean=0.741  median=0.913
+    rank of target: mean=1.18
+    target-is-top1: 36/40 = 0.900
+    target-in-top2: 39/40 = 0.975
+    most common wrong top-1 (when top1 != target): fear (2 stories)
+    full wrong distribution: joy=0, sadness=1, fear=2, disgust=1, surprise=0
+
+  fear: 40 texts
+    target conf:   mean=0.819  median=0.934
+    rank of target: mean=1.00
+    target-is-top1: 40/40 = 1.000
+    target-in-top2: 40/40 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+  disgust: 40 texts
+    target conf:   mean=0.739  median=0.926
+    rank of target: mean=1.07
+    target-is-top1: 39/40 = 0.975
+    target-in-top2: 39/40 = 0.975
+    most common wrong top-1 (when top1 != target): joy (1 stories)
+    full wrong distribution: joy=1, sadness=0, anger=0, fear=0, surprise=0
+
+  surprise: 39 texts
+    target conf:   mean=0.748  median=0.859
+    rank of target: mean=1.03
+    target-is-top1: 38/39 = 0.974
+    target-in-top2: 39/39 = 1.000
+    most common wrong top-1 (when top1 != target): fear (1 stories)
+    full wrong distribution: joy=0, sadness=0, anger=0, fear=1, disgust=0
+
+====================================================================================
+V2_thinking_thought  /  within_cell  — per-target-emotion summary  (n=470)
+====================================================================================
+
+  joy: 80 texts
+    target conf:   mean=0.541  median=0.601
+    rank of target: mean=1.00
+    target-is-top1: 80/80 = 1.000
+    target-in-top2: 80/80 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+  sadness: 77 texts
+    target conf:   mean=0.831  median=0.945
+    rank of target: mean=1.00
+    target-is-top1: 77/77 = 1.000
+    target-in-top2: 77/77 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+  anger: 80 texts
+    target conf:   mean=0.854  median=0.942
+    rank of target: mean=1.00
+    target-is-top1: 80/80 = 1.000
+    target-in-top2: 80/80 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+  fear: 76 texts
+    target conf:   mean=0.824  median=0.930
+    rank of target: mean=1.00
+    target-is-top1: 76/76 = 1.000
+    target-in-top2: 76/76 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+  disgust: 79 texts
+    target conf:   mean=0.662  median=0.863
+    rank of target: mean=1.10
+    target-is-top1: 73/79 = 0.924
+    target-in-top2: 77/79 = 0.975
+    most common wrong top-1 (when top1 != target): anger (3 stories)
+    full wrong distribution: joy=0, sadness=1, anger=3, fear=2, surprise=0
+
+  surprise: 78 texts
+    target conf:   mean=0.807  median=0.923
+    rank of target: mean=1.00
+    target-is-top1: 78/78 = 1.000
+    target-in-top2: 78/78 = 1.000
+    most common wrong top-1 (when top1 != target): n/a (no misclassifications)
+
+====================================================================================
+V3_thinking_reply  /  topic_level  — per-target-emotion summary  (n=1785)
+====================================================================================
+
+  joy: 300 texts
+    target conf:   mean=0.926  median=0.988
+    rank of target: mean=1.18
+    target-is-top1: 254/300 = 0.847
+    target-in-top2: 294/300 = 0.980
+    most common wrong top-1 (when top1 != target): surprise (41 stories)
+    full wrong distribution: sadness=0, anger=1, fear=3, disgust=1, surprise=41
+
+  sadness: 288 texts
+    target conf:   mean=0.561  median=0.704
+    rank of target: mean=1.85
+    target-is-top1: 156/288 = 0.542
+    target-in-top2: 220/288 = 0.764
+    most common wrong top-1 (when top1 != target): fear (79 stories)
+    full wrong distribution: joy=1, anger=20, fear=79, disgust=13, surprise=19
+
+  anger: 300 texts
+    target conf:   mean=0.801  median=0.967
+    rank of target: mean=1.57
+    target-is-top1: 181/300 = 0.603
+    target-in-top2: 264/300 = 0.880
+    most common wrong top-1 (when top1 != target): fear (86 stories)
+    full wrong distribution: joy=0, sadness=5, fear=86, disgust=21, surprise=7
+
+  fear: 300 texts
+    target conf:   mean=0.907  median=0.982
+    rank of target: mean=1.23
+    target-is-top1: 257/300 = 0.857
+    target-in-top2: 285/300 = 0.950
+    most common wrong top-1 (when top1 != target): sadness (16 stories)
+    full wrong distribution: joy=0, sadness=16, anger=13, disgust=10, surprise=4
+
+  disgust: 300 texts  ⚠ CORPUS QUALITY CONCERN
+    target conf:   mean=0.683  median=0.936
+    rank of target: mean=2.07
+    target-is-top1: 135/300 = 0.450
+    target-in-top2: 216/300 = 0.720
+    most common wrong top-1 (when top1 != target): fear (101 stories)
+    full wrong distribution: joy=1, sadness=8, anger=47, fear=101, surprise=8
+
+  surprise: 297 texts  ⚠ CORPUS QUALITY CONCERN
+    target conf:   mean=0.689  median=0.881
+    rank of target: mean=1.78
+    target-is-top1: 137/297 = 0.461
+    target-in-top2: 251/297 = 0.845
+    most common wrong top-1 (when top1 != target): fear (138 stories)
+    full wrong distribution: joy=1, sadness=10, anger=9, fear=138, disgust=2
+
+====================================================================================
+V3_thinking_reply  /  within_cell  — per-target-emotion summary  (n=1410)
+====================================================================================
+
+  joy: 240 texts
+    target conf:   mean=0.928  median=0.995
+    rank of target: mean=1.20
+    target-is-top1: 203/240 = 0.846
+    target-in-top2: 232/240 = 0.967
+    most common wrong top-1 (when top1 != target): surprise (35 stories)
+    full wrong distribution: sadness=0, anger=1, fear=1, disgust=0, surprise=35
+
+  sadness: 231 texts
+    target conf:   mean=0.673  median=0.871
+    rank of target: mean=1.65
+    target-is-top1: 139/231 = 0.602
+    target-in-top2: 192/231 = 0.831
+    most common wrong top-1 (when top1 != target): fear (79 stories)
+    full wrong distribution: joy=0, anger=4, fear=79, disgust=1, surprise=8
+
+  anger: 240 texts
+    target conf:   mean=0.826  median=0.978
+    rank of target: mean=1.57
+    target-is-top1: 143/240 = 0.596
+    target-in-top2: 209/240 = 0.871
+    most common wrong top-1 (when top1 != target): fear (78 stories)
+    full wrong distribution: joy=0, sadness=8, fear=78, disgust=8, surprise=3
+
+  fear: 228 texts
+    target conf:   mean=0.948  median=0.992
+    rank of target: mean=1.14
+    target-is-top1: 206/228 = 0.904
+    target-in-top2: 222/228 = 0.974
+    most common wrong top-1 (when top1 != target): sadness (11 stories)
+    full wrong distribution: joy=0, sadness=11, anger=5, disgust=5, surprise=1
+
+  disgust: 237 texts
+    target conf:   mean=0.770  median=0.979
+    rank of target: mean=1.90
+    target-is-top1: 119/237 = 0.502
+    target-in-top2: 176/237 = 0.743
+    most common wrong top-1 (when top1 != target): fear (75 stories)
+    full wrong distribution: joy=0, sadness=3, anger=36, fear=75, surprise=4
+
+  surprise: 234 texts  ⚠ CORPUS QUALITY CONCERN
+    target conf:   mean=0.720  median=0.903
+    rank of target: mean=1.80
+    target-is-top1: 101/234 = 0.432
+    target-in-top2: 200/234 = 0.855
+    most common wrong top-1 (when top1 != target): fear (121 stories)
+    full wrong distribution: joy=0, sadness=8, anger=3, fear=121, disgust=1
+
+====================================================================================
+V1_no_thinking_full  /  topic_level  — 6×6 matrix (rows = TARGET, cols = TOP-1)
+====================================================================================
+  target\pred     joy   sadne   anger    fear   disgu   surpr  | row_n  diag%
+  joy              273       0       0       1       0      26  |   300   91.0%
+  sadness            0     145      16     104       6      29  |   300   48.3%
+  anger              0      11     197      66      13      13  |   300   65.7%
+  fear               0      17      13     235       6      29  |   300   78.3%
+  disgust            0      10      78     102      89      21  |   300   29.7%
+  surprise           1      20      14     111       2     152  |   300   50.7%
+
+====================================================================================
+V1_no_thinking_full  /  within_cell  — 6×6 matrix (rows = TARGET, cols = TOP-1)
+====================================================================================
+  target\pred     joy   sadne   anger    fear   disgu   surpr  | row_n  diag%
+  joy              219       0       0       0       0      21  |   240   91.2%
+  sadness            0     126      13      86       2      13  |   240   52.5%
+  anger              0       7     164      54      10       5  |   240   68.3%
+  fear               0      12       2     215       2       9  |   240   89.6%
+  disgust            0       5      50      78      97      10  |   240   40.4%
+  surprise           0      17       8      88       3     124  |   240   51.7%
+
+====================================================================================
+V2_thinking_thought  /  topic_level  — 6×6 matrix (rows = TARGET, cols = TOP-1)
+====================================================================================
+  target\pred     joy   sadne   anger    fear   disgu   surpr  | row_n  diag%
+  joy               40       0       0       0       0       0  |    40  100.0%
+  sadness            0      39       0       0       0       0  |    39  100.0%
+  anger              0       1      36       2       1       0  |    40   90.0%
+  fear               0       0       0      40       0       0  |    40  100.0%
+  disgust            1       0       0       0      39       0  |    40   97.5%
+  surprise           0       0       0       1       0      38  |    39   97.4%
+
+====================================================================================
+V2_thinking_thought  /  within_cell  — 6×6 matrix (rows = TARGET, cols = TOP-1)
+====================================================================================
+  target\pred     joy   sadne   anger    fear   disgu   surpr  | row_n  diag%
+  joy               80       0       0       0       0       0  |    80  100.0%
+  sadness            0      77       0       0       0       0  |    77  100.0%
+  anger              0       0      80       0       0       0  |    80  100.0%
+  fear               0       0       0      76       0       0  |    76  100.0%
+  disgust            0       1       3       2      73       0  |    79   92.4%
+  surprise           0       0       0       0       0      78  |    78  100.0%
+
+====================================================================================
+V3_thinking_reply  /  topic_level  — 6×6 matrix (rows = TARGET, cols = TOP-1)
+====================================================================================
+  target\pred     joy   sadne   anger    fear   disgu   surpr  | row_n  diag%
+  joy              254       0       1       3       1      41  |   300   84.7%
+  sadness            1     156      20      79      13      19  |   288   54.2%
+  anger              0       5     181      86      21       7  |   300   60.3%
+  fear               0      16      13     257      10       4  |   300   85.7%
+  disgust            1       8      47     101     135       8  |   300   45.0%
+  surprise           1      10       9     138       2     137  |   297   46.1%
+
+====================================================================================
+V3_thinking_reply  /  within_cell  — 6×6 matrix (rows = TARGET, cols = TOP-1)
+====================================================================================
+  target\pred     joy   sadne   anger    fear   disgu   surpr  | row_n  diag%
+  joy              203       0       1       1       0      35  |   240   84.6%
+  sadness            0     139       4      79       1       8  |   231   60.2%
+  anger              0       8     143      78       8       3  |   240   59.6%
+  fear               0      11       5     206       5       1  |   228   90.4%
+  disgust            0       3      36      75     119       4  |   237   50.2%
+  surprise           0       8       3     121       1     101  |   234   43.2%
+
+====================================================================================
+HOLDOUT CORPUS-QUALITY SUMMARY TABLE
+====================================================================================
+
+Flag rule: target-as-top1 < 50% → CORPUS QUALITY CONCERN.
+
+  Vector set                 Kind         Emotion    n     target-as-top1 %   mean target conf    flag
+  ------------------------------------------------------------------------------------------------------------------
+  V1_no_thinking_full        topic_level  joy        300         91.0%             0.969        
+  V1_no_thinking_full        topic_level  sadness    300         48.3%             0.554          ⚠ CONCERN
+  V1_no_thinking_full        topic_level  anger      300         65.7%             0.787        
+  V1_no_thinking_full        topic_level  fear       300         78.3%             0.842        
+  V1_no_thinking_full        topic_level  disgust    300         29.7%             0.595          ⚠ CONCERN
+  V1_no_thinking_full        topic_level  surprise   300         50.7%             0.688        
+  V1_no_thinking_full        within_cell  joy        240         91.2%             0.961        
+  V1_no_thinking_full        within_cell  sadness    240         52.5%             0.638        
+  V1_no_thinking_full        within_cell  anger      240         68.3%             0.857        
+  V1_no_thinking_full        within_cell  fear       240         89.6%             0.931        
+  V1_no_thinking_full        within_cell  disgust    240         40.4%             0.698          ⚠ CONCERN
+  V1_no_thinking_full        within_cell  surprise   240         51.7%             0.733        
+  V2_thinking_thought        topic_level  joy         40        100.0%             0.519        
+  V2_thinking_thought        topic_level  sadness     39        100.0%             0.806        
+  V2_thinking_thought        topic_level  anger       40         90.0%             0.741        
+  V2_thinking_thought        topic_level  fear        40        100.0%             0.819        
+  V2_thinking_thought        topic_level  disgust     40         97.5%             0.739        
+  V2_thinking_thought        topic_level  surprise    39         97.4%             0.748        
+  V2_thinking_thought        within_cell  joy         80        100.0%             0.541        
+  V2_thinking_thought        within_cell  sadness     77        100.0%             0.831        
+  V2_thinking_thought        within_cell  anger       80        100.0%             0.854        
+  V2_thinking_thought        within_cell  fear        76        100.0%             0.824        
+  V2_thinking_thought        within_cell  disgust     79         92.4%             0.662        
+  V2_thinking_thought        within_cell  surprise    78        100.0%             0.807        
+  V3_thinking_reply          topic_level  joy        300         84.7%             0.926        
+  V3_thinking_reply          topic_level  sadness    288         54.2%             0.561        
+  V3_thinking_reply          topic_level  anger      300         60.3%             0.801        
+  V3_thinking_reply          topic_level  fear       300         85.7%             0.907        
+  V3_thinking_reply          topic_level  disgust    300         45.0%             0.683          ⚠ CONCERN
+  V3_thinking_reply          topic_level  surprise   297         46.1%             0.689          ⚠ CONCERN
+  V3_thinking_reply          within_cell  joy        240         84.6%             0.928        
+  V3_thinking_reply          within_cell  sadness    231         60.2%             0.673        
+  V3_thinking_reply          within_cell  anger      240         59.6%             0.826        
+  V3_thinking_reply          within_cell  fear       228         90.4%             0.948        
+  V3_thinking_reply          within_cell  disgust    237         50.2%             0.770        
+  V3_thinking_reply          within_cell  surprise   234         43.2%             0.720          ⚠ CONCERN
+
+====================================================================================
+DeBERTa CONFIDENCE × CONTRASTIVE-METHOD CORRECTNESS (HOLDOUT)
+====================================================================================
+
+For each set, contrastive vectors built from train-topic train-trial files
+at the best raw (L, K) cell; classified on the holdout texts. This IS a
+generalization measure (holdout didn't contribute to centroids).
+
+  V1_no_thinking_full  (raw L21, K=60)
+    topic_level (n=1680)  contrastive accuracy = 0.271  (correct=455, wrong=1225)
+      DeBERTa target_conf on contrastive-RIGHT: mean=0.850  median=0.987
+      DeBERTa target_conf on contrastive-WRONG: mean=0.707  median=0.918
+      delta(correct - wrong) mean target_conf: +0.143
+      per-emotion:
+        joy        193/282   correct_conf=0.968   wrong_conf=0.972
+        sadness     25/277   correct_conf=0.405   wrong_conf=0.571
+        anger      230/285   correct_conf=0.813   wrong_conf=0.685
+        fear         0/285   correct_conf=n/a   wrong_conf=0.845
+        disgust      7/274   correct_conf=0.401   wrong_conf=0.605
+        surprise     0/277   correct_conf=n/a   wrong_conf=0.707
+    within_cell (n=1440)  contrastive accuracy = 0.255  (correct=367, wrong=1073)
+      DeBERTa target_conf on contrastive-RIGHT: mean=0.903  median=0.993
+      DeBERTa target_conf on contrastive-WRONG: mean=0.769  median=0.953
+      delta(correct - wrong) mean target_conf: +0.134
+      per-emotion:
+        joy        148/240   correct_conf=0.965   wrong_conf=0.955
+        sadness      0/240   correct_conf=n/a   wrong_conf=0.638
+        anger      219/240   correct_conf=0.861   wrong_conf=0.814
+        fear         0/240   correct_conf=n/a   wrong_conf=0.931
+        disgust      0/240   correct_conf=n/a   wrong_conf=0.698
+        surprise     0/240   correct_conf=n/a   wrong_conf=0.733
+
+  V2_thinking_thought  (raw L17, K=55)
+    topic_level (n=238)  contrastive accuracy = 0.353  (correct=84, wrong=154)
+      DeBERTa target_conf on contrastive-RIGHT: mean=0.705  median=0.895
+      DeBERTa target_conf on contrastive-WRONG: mean=0.741  median=0.900
+      delta(correct - wrong) mean target_conf: -0.036
+      per-emotion:
+        joy         34/40    correct_conf=0.545   wrong_conf=0.373
+        sadness     22/39    correct_conf=0.802   wrong_conf=0.811
+        anger        0/40    correct_conf=n/a   wrong_conf=0.741
+        fear        28/40    correct_conf=0.822   wrong_conf=0.811
+        disgust      0/40    correct_conf=n/a   wrong_conf=0.739
+        surprise     0/39    correct_conf=n/a   wrong_conf=0.748
+    within_cell (n=470)  contrastive accuracy = 0.370  (correct=174, wrong=296)
+      DeBERTa target_conf on contrastive-RIGHT: mean=0.714  median=0.864
+      DeBERTa target_conf on contrastive-WRONG: mean=0.775  median=0.915
+      delta(correct - wrong) mean target_conf: -0.061
+      per-emotion:
+        joy         68/80    correct_conf=0.527   wrong_conf=0.621
+        sadness     39/77    correct_conf=0.831   wrong_conf=0.831
+        anger        0/80    correct_conf=n/a   wrong_conf=0.854
+        fear        67/76    correct_conf=0.835   wrong_conf=0.744
+        disgust      0/79    correct_conf=n/a   wrong_conf=0.662
+        surprise     0/78    correct_conf=n/a   wrong_conf=0.807
+
+  V3_thinking_reply  (raw L17, K=30)
+    topic_level (n=1785)  contrastive accuracy = 0.305  (correct=544, wrong=1241)
+      DeBERTa target_conf on contrastive-RIGHT: mean=0.874  median=0.981
+      DeBERTa target_conf on contrastive-WRONG: mean=0.714  median=0.931
+      delta(correct - wrong) mean target_conf: +0.160
+      per-emotion:
+        joy        270/300   correct_conf=0.939   wrong_conf=0.806
+        sadness      0/288   correct_conf=n/a   wrong_conf=0.561
+        anger      274/300   correct_conf=0.810   wrong_conf=0.703
+        fear         0/300   correct_conf=n/a   wrong_conf=0.907
+        disgust      0/300   correct_conf=n/a   wrong_conf=0.683
+        surprise     0/297   correct_conf=n/a   wrong_conf=0.689
+    within_cell (n=1410)  contrastive accuracy = 0.312  (correct=440, wrong=970)
+      DeBERTa target_conf on contrastive-RIGHT: mean=0.883  median=0.989
+      DeBERTa target_conf on contrastive-WRONG: mean=0.778  median=0.961
+      delta(correct - wrong) mean target_conf: +0.106
+      per-emotion:
+        joy        205/240   correct_conf=0.945   wrong_conf=0.823
+        sadness      0/231   correct_conf=n/a   wrong_conf=0.673
+        anger      235/240   correct_conf=0.829   wrong_conf=0.688
+        fear         0/228   correct_conf=n/a   wrong_conf=0.948
+        disgust      0/237   correct_conf=n/a   wrong_conf=0.770
+        surprise     0/234   correct_conf=n/a   wrong_conf=0.720
+
+====================================================================================
+END
+====================================================================================

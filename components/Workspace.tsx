@@ -19,6 +19,7 @@ import {
 } from "@/lib/emotions";
 import { ChatPane, type ChatMessage } from "@/components/ChatPane";
 import { EmotionPanel } from "@/components/EmotionPanel";
+import { EmotionGeometry } from "@/components/EmotionGeometry";
 import { type Layer } from "@/components/LayerSelector";
 
 interface BackendTokenEvent {
@@ -144,6 +145,32 @@ export function Workspace() {
   const [selectedExcerpt, setSelectedExcerpt] = useState<string | null>(null);
   const [classifierOn, setClassifierOn] = useState(false);
   const [valuesOn, setValuesOn] = useState(false);
+  // Left-panel view mode. Three-way: bars / thought_map / output_map.
+  // Persisted to localStorage so refresh keeps the user's selection.
+  // Hydration-safe: server renders "bars"; client reads localStorage in
+  // a useEffect after mount and updates if needed.
+  type ViewMode = "bars" | "thought_map" | "output_map";
+  const VALID_VIEW_MODES: readonly ViewMode[] = ["bars", "thought_map", "output_map"];
+  const [viewMode, setViewMode] = useState<ViewMode>("bars");
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("understanding.viewMode");
+      if (stored && (VALID_VIEW_MODES as readonly string[]).includes(stored)) {
+        setViewMode(stored as ViewMode);
+      }
+    } catch {
+      /* localStorage unavailable; default state stays */
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const persistViewMode = (next: ViewMode) => {
+    setViewMode(next);
+    try {
+      window.localStorage.setItem("understanding.viewMode", next);
+    } catch {
+      /* ignore */
+    }
+  };
   /** Flips true the moment the streaming turn enters its reply phase
    *  (first reply-phase token arrives). Resets on each new submit. The
    *  EmotionPanel uses this to gate the diff label so it doesn't read
@@ -699,29 +726,40 @@ export function Workspace() {
   return (
     <>
       <div className="w-[45%] border-r border-divider">
-        <EmotionPanel
-          state={displayedBars}
-          turns={turns}
-          viewingIndex={viewingIndex}
-          snapshotIndex={snapshotIndex}
-          selectedExcerpt={selectedExcerpt}
-          onNavigate={navigateTurn}
-          onScrub={handleScrub}
-          onReplayTurn={handleReplayTurn}
-          onReplayAll={handleReplayAll}
-          onStopReplay={handleStopReplay}
-          isReplaying={isReplaying}
-          isGenerating={isGenerating}
-          thoughtLayer={thoughtLayer}
-          replyLayer={replyLayer}
-          onThoughtLayerChange={setThoughtLayer}
-          onReplyLayerChange={setReplyLayer}
-          classifierOn={classifierOn}
-          onClassifierToggle={setClassifierOn}
-          valuesOn={valuesOn}
-          onValuesToggle={setValuesOn}
-          replyStarted={replyStarted}
-        />
+        {viewMode === "bars" ? (
+          <EmotionPanel
+            state={displayedBars}
+            turns={turns}
+            viewingIndex={viewingIndex}
+            snapshotIndex={snapshotIndex}
+            selectedExcerpt={selectedExcerpt}
+            onNavigate={navigateTurn}
+            onScrub={handleScrub}
+            onReplayTurn={handleReplayTurn}
+            onReplayAll={handleReplayAll}
+            onStopReplay={handleStopReplay}
+            isReplaying={isReplaying}
+            isGenerating={isGenerating}
+            thoughtLayer={thoughtLayer}
+            replyLayer={replyLayer}
+            onThoughtLayerChange={setThoughtLayer}
+            onReplyLayerChange={setReplyLayer}
+            classifierOn={classifierOn}
+            onClassifierToggle={setClassifierOn}
+            valuesOn={valuesOn}
+            onValuesToggle={setValuesOn}
+            replyStarted={replyStarted}
+            viewMode={viewMode}
+            onViewModeChange={persistViewMode}
+          />
+        ) : (
+          <EmotionGeometry
+            state={displayedBars}
+            scope={viewMode === "thought_map" ? "thought" : "reply"}
+            viewMode={viewMode}
+            onViewModeChange={persistViewMode}
+          />
+        )}
       </div>
       <div className="w-[55%]">
         <ChatPane

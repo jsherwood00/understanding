@@ -1,0 +1,1161 @@
+================================================================
+CORRECTNESS REPORT — Contrastive emotion-vector + percentile-rank
+visualization pipeline
+================================================================
+
+Audit started: 2026-05-12
+Repo state: commit 1ae6549 ("Live two-phase emotion viz: per-scope
+vectors, percentile-rank y-axis, redesigned UI") on branch main.
+
+This report has two halves: Part A is my own code-reading analysis;
+Part B is the specific numerical data requested for external review.
+Interpretive conclusions are deliberately omitted.
+
+Vector sets in scope:
+  V1 = no_thinking_full     — data/no_thinking/vectors/full/cutoff_50/
+  V2 = thinking_thought     — data/thinking/vectors/thought/cutoff_50/
+  V3 = thinking_reply       — data/thinking/vectors/reply/cutoff_50/
+
+Validated best layers per project-internal selection (norm-based):
+  V1 L25, V2 L13, V3 L25.
+
+================================================================
+PART A — INDEPENDENT ANALYSIS
+================================================================
+
+A.0  AUDIT METHOD
+
+I read each file in pipeline/, backend/, components/, lib/ end-to-
+end. I also dispatched four parallel exploratory sub-readings (one
+per concern area: pipeline correctness, live inference path,
+frontend data flow, pre-registration honoring). Findings below are
+cross-checked against my own re-reads; where a sub-reading was
+wrong I note it as "FALSE POSITIVE FROM SUBAGENT".
+
+A.1  [CRITICAL] PERCENTILE CALIBRATION INCLUDES HOLDOUT-TOPIC STORIES
+     pipeline/percentile_calibrate.py:54-62
+
+  files_for() uses globs:
+      reply scope:   "{emotion}_topic_*_split_train_story_*.npz"
+      thought scope: "{emotion}_topic_*_split_train_thought.npz"
+
+  The "_split_train_" qualifier filters the TRIAL-level split
+  (within-topic train trials vs. trial-holdout trials 12-14). It
+  does NOT filter the TOPIC-level split (train topics 0-79 vs.
+  holdout topics 80-99). topic_split.json is NOT loaded anywhere
+  in this file.
+
+  Empirical confirmation (file counts in data/thinking/activations/):
+                  matched by glob   train topics 0-79   holdout topics 80-99
+      joy           1164              924                240
+      sadness       1176              948                228
+      anger         1200              960                240
+      fear          1188              948                240
+      disgust       1200              960                240
+      surprise      1188              948                240
+
+  ~20.0% of every emotion's calibration corpus came from holdout
+  topics (80-99). The commit message for 1ae6549 explicitly claims
+  "Source: contrastive corpus train-split (~130k samples per cell
+  for reply scope, ~32k for thought), holdout intentionally
+  excluded".  The CODE does not honor that claim.
+
+  This is a pre-registration violation. The topic_split.json was
+  committed at 8a6f5f7 (2026-05-10) with the explicit
+  "locked_before": "any vector computation runs" stipulation, and
+  compute_vectors.py honors it (pipeline/compute_vectors.py:177-179,
+  :239-241). The percentile-calibration step was authored later and
+  did not load topic_split.json.
+
+  Impact: the breakpoint distributions in
+  data/thinking/vectors/{reply,thought}/cutoff_50/calibration.json
+  are partially built on activations from topics that are supposed
+  to be held out. Any "percentile against training stories" claim
+  is therefore actually "percentile against (training topics +
+  holdout topics, train trials)". The y-axis label
+  "Emotion intensity (percentile)" overstates the cleanness of the
+  reference distribution.
+
+
+A.2  [HIGH] "BEST LAYER PER EMOTION" SELECTED BY VECTOR NORM, NOT BY
+     ACCURACY OR DISCRIMINABILITY
+     pipeline/compute_vectors.py:362-394
+
+  After writing each layer's vector, the code computes its L2 norm
+  and picks the argmax-norm layer as "best":
+      best_layer, best_norm = max(rows, key=lambda r: r[1])
+      best[E] = {"layer": best_layer, "norm": best_norm}
+
+  Empirical consequence: every emotion in every scope picks the
+  same single layer because the residual-stream norm grows
+  monotonically (or otherwise dominantly) at one layer position:
+      data/thinking/vectors/reply/cutoff_50/best_layer_per_emotion.json:
+          joy/sadness/anger/fear/surprise/disgust → all layer 13
+      data/thinking/vectors/thought/cutoff_50/best_layer_per_emotion.json:
+          all six emotions → layer 32
+
+  These selections disagree with the 6-way holdout-classification
+  accuracy reported in the same directories'
+  holdout_classification_topic_level.json:
+      reply scope:   L13=0.379  L17=0.376  L21=0.324  L25=0.536  L28=0.290  (no L32 reported)
+      thought scope: L13=0.487  L17=0.391  L21=0.185  L25=0.210  L28=0.176  L32=0.416
+
+  The norm-selected "best" (reply=L13, thought=L32) is NOT the
+  accuracy-best for either scope (reply=L25, thought=L13). The
+  best_layer_per_emotion.json files are therefore misleading as a
+  layer-quality signal.
+
+  Notes:
+   - lib/emotions.ts:36-42 hard-codes BEST_LAYER = {thought: 13,
+     reply: 25}, which IS the accuracy-best (not the norm-best from
+     the JSON). The frontend default is correct; the JSON file
+     contradicts it.
+   - The docstring at compute_vectors.py:27-30 does not document
+     the selection criterion. A reviewer reading
+     best_layer_per_emotion.json would have no way to know it's
+     norm-based.
+
+
+A.3  [HIGH] TRAINING-TIME CUTOFF NOT APPLIED AT INFERENCE OR
+     CALIBRATION
+     pipeline/compute_vectors.py:128-135 vs.
+     pipeline/percentile_calibrate.py:77-91 vs.
+     backend/inference.py:296-309 (_project)
+
+  Vectors at data/thinking/vectors/<scope>/cutoff_50/ were computed
+  from per-story mean residuals where the first 50 tokens of each
+  story were excluded:
+      compute_vectors.py:128-135
+      return layer_arr[cutoff:].astype(np.float32).mean(axis=0)
+      # called with cutoff=50
+
+  At calibration time, percentile_calibrate.py:projections_from_file
+  projects EVERY position of every NPZ:
+      acts = data[f"layer_{L}"].astype(np.float32)
+      out[L] = acts @ emo_vectors[L]
+  No cutoff applied — positions 0..49 are included.
+
+  At inference, backend/inference.py:_project projects the current
+  last-position residual (whatever its position in the generated
+  reply). No cutoff filter exists in the live path. The first
+  ~50 reply tokens are projected against a vector that was trained
+  to point in the direction of LATER-token averages.
+
+  All three regimes use the same vectors but different position
+  distributions:
+    - vector training      : positions 50..N-1, averaged per story
+    - calibration distrib  : positions 0..N-1, per token
+    - inference distrib    : positions 0..N-1, per token (matches
+                             calibration, not vector training)
+
+  Inference and calibration are consistent with each other (so the
+  y-axis percentile is empirically grounded), but neither is
+  consistent with the vector-training distribution.
+
+
+A.4  [HIGH] PROMPT-CONTEXT MISMATCH BETWEEN VECTOR EXTRACTION AND
+     LIVE INFERENCE
+     pipeline/extract_activations.py:209-241 vs.
+     backend/inference.py:_build_prompt + generate_stream
+
+  Vector / calibration extraction tokenizes the RAW story text and
+  forwards it as a standalone input:
+      pipeline/extract_activations.py:220
+          input_ids = tokenizer(text, return_tensors="pt").input_ids[0]
+  No chat-template wrapper, no user prompt, no <|channel> markers,
+  no system tokens. The residual at NPZ row 0 is the residual at
+  the FIRST token of the story text, with NO conversational context.
+
+  Live inference applies the full Gemma chat template with
+  enable_thinking=True (backend/inference.py:286-292):
+      text = tokenizer.apply_chat_template(
+          msgs, tokenize=False, add_generation_prompt=True,
+          enable_thinking=True,
+      )
+  Then the model generates tokens in this conversational context.
+  Generated reply/thought tokens are at high sequence positions
+  (prompt + thinking + reply), with full KV-cache context.
+
+  Implication: every saved residual in
+  data/thinking/activations/ was computed from a forward over the
+  story text alone. The live demo never sees that distribution —
+  it always projects residuals that were produced under
+  conversational context with the chat template fully consumed.
+
+  Whether this is a meaningful distributional gap (and whether the
+  emotion direction generalizes across the two contexts) is an
+  empirical question; the code makes no claim that it does.
+
+
+A.5  [HIGH] V2 (thinking_thought) RESIDUALS LIKELY EXPOSE LITERAL
+     EMOTION WORDS BECAUSE NO LEAK FILTER IS APPLIED
+     pipeline/compute_vectors.py:558-572 +
+     pipeline/extract_activations.py:351-376
+
+  The pre-registered synonym filter (commit 6cf25bf) is applied to
+  emotion STORIES at vector-compute time and excludes any story
+  whose text contains the prohibited word for that emotion. It is
+  deliberately NOT applied to THOUGHT extractions:
+      compute_vectors.py:558-561
+          # Set 3: thinking, thought (leak filter not applied to
+          # thoughts — the model's reasoning often quotes the emotion
+          # word explicitly, which is fine for thought-level
+          # analysis).
+      extract_activations.py:372-374
+          # Thoughts aren't constrained by the no-emotion-word rule
+
+  The model's "thought" blocks for an emotion=joy batch routinely
+  start with phrasings like:
+      "Here's a thinking process: ... user wants a joyful story...
+       must convey joy and unexpected delight..."
+  i.e. the emotion word appears verbatim, repeatedly, in the
+  thought.
+
+  V2 vectors are therefore at least partly a direction along which
+  "this text discusses emotion E" rather than "this text expresses
+  emotion E". The Cohen's d numbers for V2 (Part B1 below) are
+  3.07-4.27 vs. 0.98-1.38 for V1/V3 — consistent with a much
+  easier discriminative task (presence of the emotion word in the
+  text vs. emotional content per se).
+
+  This is not, on its own, a bug. The docstring at
+  compute_vectors.py:558-572 acknowledges the choice. It IS a
+  research-validity concern if any claim is made about V2 being a
+  "feeling" direction rather than a "discussing the emotion"
+  direction.
+
+
+A.6  [MED] CALIBRATION SAMPLES ARE PER-TOKEN; VECTOR TRAINING SAMPLES
+     ARE PER-STORY MEAN
+     pipeline/percentile_calibrate.py:77-91 vs.
+     pipeline/compute_vectors.py:128-135
+
+  Vectors are computed as the contrastive difference between
+  per-story mean residuals. Each "training data point" is one
+  story's mean residual at one layer.
+
+  Calibration breakpoints are computed by projecting EVERY token
+  in every train-trial NPZ. Each "calibration data point" is one
+  token's residual at one layer.
+
+  The two distributions have different shapes (per-token has much
+  higher variance than per-story-mean). The percentile lookup at
+  inference therefore answers "what fraction of training-corpus
+  tokens projected lower than this", not "what fraction of training
+  stories had a mean projection lower than this". The y-axis label
+  "Emotion intensity (percentile)" does not specify the unit.
+
+
+A.7  [MED] V1 (no_thinking_full) HAS NO CALIBRATION FILE BECAUSE THE
+     CALIBRATOR HARDCODES THE THINKING CORPUS PATH
+     pipeline/percentile_calibrate.py:46
+
+      ACTIVATIONS_DIR = DATA_DIR / "thinking" / "activations"
+
+  files_for() never accepts a corpus argument. If someone runs
+  `python -m pipeline.percentile_calibrate --scope reply` intending
+  to calibrate V1 vectors, the script silently reads V3 activations
+  (since V3 reply files also match the glob in data/thinking/) and
+  writes the result to data/thinking/vectors/reply/cutoff_50/.
+  V1's directory at data/no_thinking/vectors/full/cutoff_50/ has
+  no calibration.json on disk.
+
+  Practical consequence: the live demo cannot use V1 vectors as-is.
+  Part B3 below estimates V1 accuracy using an inline-computed
+  percentile reference (Part B's audit script,
+  empirical_breakpoints_from_train), but no saved calibration
+  artifact exists for V1.
+
+
+A.8  [MED] FIRST GENERATED TOKEN'S PROJECTION IS BASED ON THE PROMPT'S
+     LAST-POSITION RESIDUAL, NOT ON A GENERATED-POSITION RESIDUAL
+     backend/inference.py:419-475
+
+  Trace of the loop per the comments + read of the actual code:
+    1. First _step processes the full prompt; hook captures the
+       residual at every prompt position.
+    2. Loop iter 0: next_id is the first sampled token. self._captured
+       still holds prompt-residuals from step 1. _project takes
+       self._captured[layer][0, -1, :] — the residual at the LAST
+       position of the prompt. This residual produced (via the LM
+       head) the sampled token. So semantically it is "the state
+       that emitted this token" — defensibly aligned with training.
+    3. Iter 1 onwards: hook captures the residual at the just-
+       processed generated token's position; _project reads it.
+
+  The first reply-phase token's projection uses a residual at a
+  PROMPT position. The training corpus (NPZ files in
+  data/thinking/activations/) was built from forwards over story
+  text ALONE (no prompt — see A.4). So the training distribution
+  contains no analog of "residual at prompt's last position".
+
+  After token 0 of each phase, the inference distribution matches
+  what the model sees during a story re-forward.
+
+
+A.9  [MED] CHANNEL-MARKER TOKENS ARE PROJECTED BEFORE BEING
+     SUPPRESSED FROM EMIT
+     backend/inference.py:431-475
+
+  The order in the per-iteration block is:
+    1. Detect channel marker (lines 431-438), switch phase.
+    2. Project with NEW phase (line 455).
+    3. Decide suppression (line 464).
+    4. _step on this token (lines 470-475).
+    5. Yield (line 487) — skipped if suppress_emit is True.
+
+  When the model emits <|channel> (token_id == self.channel_open_id),
+  phase flips to "thought" and the captured residual (from the
+  previous _step, i.e. the residual that produced the marker
+  token) is projected against V2 thought vectors. The yielded
+  event is suppressed for the user, but
+    a) the projection computation runs (cheap waste);
+    b) the SAME captured residual was the one used to PRODUCE the
+       marker, so "what phase did this residual belong to?" is
+       arguably "reply" (the residual that decided to switch into
+       thought mode), not "thought".
+  The first emitted thought-content token after the marker uses
+  its OWN residual (which is genuinely a thought-phase residual),
+  so the user-visible reading is not contaminated.
+
+  Same logic applies symmetrically at <channel|>: the reply-phase
+  projection that the user first sees is of the genuine first
+  reply-content token's residual; the suppressed projection of
+  the close-marker is computed but not shown.
+
+
+A.10 [MED] BACKEND HARDCODES cutoff_50 AND USES THE DENOISED COPY
+     WITHOUT METADATA-LEVEL VERIFICATION
+     backend/inference.py:64
+
+      return DATA_DIR / "thinking" / "vectors" / scope / "cutoff_50"
+
+  compute_vectors.py writes both
+      data/.../<scope>/cutoff_{N}/      (denoised — projected
+                                         orthogonal to neutral PCs)
+      data/.../<scope>/cutoff_{N}_raw/  (raw — no PC projection)
+  at three cutoffs each. The backend silently picks the denoised
+  copy at cutoff_50. There is no metadata file in either directory
+  recording which cutoff this is, whether it's denoised, what date
+  the vectors were computed, or which git commit produced them.
+
+  No code-level cross-check ensures vectors_dir(scope) actually
+  contains cutoff_50 vectors (vs. e.g. a manual file move).
+
+
+A.11 [MED] "WITHIN-CELL HOLDOUT" NAMING IS AMBIGUOUS AND ITS
+     COMPOSITION IS NOT GENERALIZATION
+     pipeline/validation.py:135-146 + 137-142
+
+  validation.py defines three holdout modes:
+    "within_cell"  — train topics (0-79) × trial-holdout trials (12-14)
+    "topic_level"  — holdout topics (80-99) × all trials
+    "all"          — union
+
+  The phrase "within_cell" is ambiguous between
+    (a) "within the same (emotion, topic) cell that produced training
+        trials" and
+    (b) "within the cell of train-topics".
+  The docstring at line 102-107 clarifies it means (b). For a
+  reviewer this is fine, but the JSON output file
+  holdout_classification_within_cell.json could be misread as a
+  measure of "within-distribution" accuracy when it is actually a
+  measure of "within the same topics that the model was trained on,
+  testing held-out trials".
+
+  The headline 53.6% (V3 / topic-level) and 96.7% (V2 / B3 below)
+  numbers should be compared only against topic_level, not
+  within_cell.
+
+
+A.12 [MED] best_layer_per_emotion.json AND cosine_matrix.json FILES
+     ARE COMPUTED AT THE SAME "COMMON BEST" LAYER, COUPLING TWO
+     UNRELATED SELECTIONS
+     pipeline/compute_vectors.py:396-409
+
+  After picking the per-emotion norm-best layer, the code chooses a
+  single "common best" layer as the mode of those norm-bests:
+      common_best = Counter(b["layer"] for b in best.values()).most_common(1)[0][0]
+  and writes the 6x6 cosine matrix at that ONE layer. Because all
+  six emotions pick the same layer (per A.2), this is a single-
+  layer matrix.
+
+  Effect: cosine_matrix.json reports cosines at the norm-best
+  layer, which is NOT the accuracy-best layer. A reviewer reading
+  cosine_matrix.json sees angles between vectors at a different
+  layer than the one used for classification/visualization.
+
+
+A.13 [LOW] replyStarted PROP IS DECLARED AND THREADED THROUGH THE UI
+     BUT NEVER CONSUMED
+     components/EmotionPanel.tsx:115 + components/Workspace.tsx
+     (state + setter still present)
+
+  The prop is documented as "gates the diff label so it doesn't
+  show -{thought_pct} during the thought-only prefix of a turn"
+  but the actual gating now uses only isGenerating. Harmless dead
+  code; flagged for cleanliness audit.
+
+
+A.14 [LOW] PCA OFF-BY-ONE — INVESTIGATED, NOT A BUG
+     pipeline/compute_vectors.py:333
+
+      k = int(np.searchsorted(var_explained, var_target) + 1)
+
+  FALSE POSITIVE FROM SUBAGENT. Verified empirically with a worked
+  example. searchsorted with side="left" (default) returns the
+  leftmost insertion index. With +1, the formula returns the
+  smallest k such that var_explained[k-1] >= var_target, which IS
+  the intended "keep enough PCs to explain at least var_target of
+  the variance" semantic. The trailing print statement
+      f"layer {L}: kept {k} PCs explaining {var_explained[k-1]:.2%} ..."
+  agrees with this interpretation.
+
+
+A.15 [LOW] MUTABLE-DEFAULT POTENTIAL IN EXTRACTION
+     pipeline/extract_activations.py:325
+
+      leaks = batch.get("contains_emotion_word_per_story", [[]] * len(stories))
+
+  The `[[]] * len(stories)` expression creates a list where every
+  inner [] is the SAME object. If downstream code ever mutated one
+  of these inner lists, all stories in the batch would see the
+  mutation. Current code only reads (`leaks[i]`), so no actual
+  bug. Latent fragility.
+
+
+A.16 [LOW] EMOTIONS ORDER INCONSISTENCY ACROSS FILES
+     pipeline/compute_vectors.py:56:
+         EMOTIONS = ["joy", "sadness", "anger", "fear", "surprise", "disgust"]
+     pipeline/percentile_calibrate.py:23:
+         EMOTIONS = ["joy", "sadness", "anger", "fear", "disgust", "surprise"]
+     backend/inference.py:36:
+         EMOTIONS = ["joy", "sadness", "anger", "fear", "surprise", "disgust"]
+
+  The order of "disgust" and "surprise" differs. This does NOT
+  cause incorrect results because everything is keyed by emotion
+  name string, not by index — but if anyone ever switches to
+  positional indexing, the bug would silently swap the two.
+
+
+A.17 [LOW] BACKEND'S /layers ENDPOINT HAS BEEN STRIPPED OF SEMANTIC
+     LABELS BUT FRONTEND NEVER CONSUMED IT
+     backend/main.py:95-103 + (no consumer in components/)
+
+  The endpoint exists, returns [{"layer": N}, ...] — fine. No
+  validity concern; flagged for cleanup.
+
+
+A.18 [LOW] NO REPRODUCIBILITY CHECKSUM ON THE VECTORS
+     pipeline/compute_vectors.py:354-409
+
+  Each emotion's vector npy file has no associated hash, no SHA
+  of the input NPZs, no git-commit pin in metadata. If the
+  activations corpus is regenerated and vectors are not, the live
+  backend silently uses stale vectors. A simple manifest.json with
+  {npy_path: sha256, source_npz_count: N, computed_at: ISO} per
+  cutoff directory would address this.
+
+
+A.19 [INFO] DOCSTRING ACCURACY VS. CODE
+
+  pipeline/compute_vectors.py module docstring (lines 1-39):
+    - "Pre-registered synonym filter (commit 6cf25bf) is applied at
+       vector-compute time." TRUE (line 189-192).
+    - "Holdout (story_idx >= 12) activations are NEVER included in
+       the vector mean." TRUE (line 180-182).
+    - Does NOT mention norm-based best-layer selection.
+
+  pipeline/percentile_calibrate.py module docstring (lines 1-21):
+    - "Source: contrastive corpus train-split". UNTRUE re: topic-
+       level split. See A.1.
+
+  backend/inference.py module docstring (lines 1-14):
+    - "Each emotion has a 2560-dim 'direction' at each of 6 layers
+       [13, 17, 21, 25, 28, 32] computed by contrastive prompting
+       (Sofroniew et al. 2026)." Refers to a hypothetical paper;
+       no DOI or arxiv id given in the repo.
+
+
+A.20 [INFO] DENOISING IS APPLIED — VERIFIED
+
+  pipeline/compute_vectors.py:443-461. Per-set neutral PC bases
+  computed (var-target 50%, line 63) and projected out of each
+  contrastive vector via project_out() (line 449). Raw and
+  denoised copies both written. Backend reads the denoised copy
+  (cutoff_50/, not cutoff_50_raw/).
+
+
+A.21 [INFO] SYNONYM FILTER AND TOPIC-SPLIT PRE-REG TIMESTAMPS
+
+      6cf25bf  2026-05-09 22:45  filter_synonyms.json (236 prohibited words)
+      8a6f5f7  2026-05-10 15:33  topic_split.json (train 0-79, holdout 80-99)
+      0224244  2026-05-09 22:46  initial pipeline scripts
+      79970e4  2026-05-11 00:25  vectors finalized (committed)
+      1ae6549  2026-05-12 00:30  percentile-rank calibration committed
+
+  Both pre-reg files were committed before vector finalization. No
+  commit after their creation modifies them. Compute-vectors honors
+  both; percentile-calibrate honors only the trial-split half of
+  topic_split.json (see A.1).
+
+
+A.22 [INFO] FRONTEND DATA FLOW IS SOUND
+
+  After tracing components/Workspace.tsx, EmotionPanel.tsx, and
+  lib/emotions.ts I could not find any bugs in
+    - phase routing (thought-token projections vs. reply-token
+      projections — correctly binned)
+    - averaging math (averageLayered / averageLayeredForPhase
+      handle empty-phase case via null returns; no divide by zero)
+    - the per-phase layer split (halo reads thinkingThought
+      [thoughtLayer], dot reads thinkingReply[replyLayer] — no
+      swaps)
+    - the connector geometry (chartBottom() math is consistent)
+    - selection-aware overrides (phase-local charEnd correctly
+      filters tokens by phase before averaging).
+
+
+================================================================
+PART B — REQUESTED DATA
+================================================================
+
+B1.  VECTOR QUALITY ON TRAINING DISTRIBUTION
+================================================================
+
+Per-set Cohen's d on TRAIN-topic story-mean projections (cutoff=50
+to match what compute_vectors.py used). n_own = stories of the
+target emotion; n_other = stories of all five other emotions.
+
+V1 (no_thinking_full, L25)
+                 n_own  n_other  mean_own  mean_other  cohen_d   frac>median(other)
+  joy             959    4787       7.639      -0.979    2.749    0.996
+  sadness         960    4786       4.177       2.079    1.109    0.898
+  anger           960    4786       2.162      -0.555    1.265    0.895
+  fear            948    4798       2.085       0.542    0.984    0.887
+  disgust         960    4786       1.553      -0.904    1.020    0.875
+  surprise        959    4787      -1.336      -3.441    1.170    0.872
+
+V2 (thinking_thought, L13)
+                 n_own  n_other  mean_own  mean_other  cohen_d   frac>median(other)
+  joy              77     397       6.755       1.799    4.060    1.000
+  sadness          79     395       0.913      -3.115    4.270    1.000
+  anger            80     394       2.419      -0.422    4.101    1.000
+  fear             79     395       2.062      -1.549    3.070    1.000
+  disgust          80     394       7.077       2.034    4.053    1.000
+  surprise         79     395       1.301      -2.848    4.104    1.000
+
+V3 (thinking_reply, L25)
+                 n_own  n_other  mean_own  mean_other  cohen_d   frac>median(other)
+  joy             924    4764       9.005      -0.110    3.125    0.999
+  sadness         948    4740       2.304      -0.123    1.334    0.926
+  anger           960    4728       1.991      -0.345    1.307    0.907
+  fear            948    4740       0.866      -0.729    1.049    0.890
+  disgust         960    4728       2.547       0.295    1.231    0.923
+  surprise        948    4740       0.359      -2.368    1.382    0.904
+
+
+B2.  CROSS-EMOTION SEPARATION
+================================================================
+
+B2.a  Mean own-vs-other projections.
+6x6 matrix per set. Rows = TRUE emotion of training story (the
+story's source label). Columns = which emotion's vector the
+story-mean is projected onto. Numbers are means of per-story-mean
+projections (cutoff=50 train topics). Diagonal = "own vector,
+training distribution".
+
+V1_no_thinking_full (L25)
+            joy   sadness   anger   fear   disgust  surprise
+  joy        7.64    0.98    -1.66   -0.88   -2.76    -3.31
+  sadness   -0.94    4.18    -0.45    1.23   -0.49    -3.53
+  anger     -1.24    2.13     2.16    0.65   -0.03    -3.67
+  fear      -1.12    2.96    -0.25    2.08   -0.44    -3.23
+  disgust   -1.71    2.40     0.26    0.95    1.55    -3.46
+  surprise   0.10    1.94    -0.67    0.75   -0.79    -1.34
+
+V2_thinking_thought (L13)
+            joy   sadness   anger   fear   disgust  surprise
+  joy        6.75   -2.34    -0.85   -2.47    1.27    -2.36
+  sadness    2.73    0.91    -0.42   -1.63    1.88    -3.48
+  anger      1.73   -2.90     2.42   -1.21    2.96    -2.99
+  fear       1.10   -3.12    -0.21    2.06    2.29    -2.12
+  disgust    1.02   -3.43     0.14   -1.54    7.08    -3.27
+  surprise   2.42   -3.76    -0.79   -0.92    1.75     1.30
+
+V3_thinking_reply (L25)
+            joy   sadness   anger   fear   disgust  surprise
+  joy        9.00   -1.35    -1.20   -2.41   -1.58    -2.47
+  sadness   -0.11    2.30    -0.36   -0.12    0.85    -2.56
+  anger      0.08   -0.09     1.99   -0.68    1.02    -2.33
+  fear      -0.56    0.64    -0.16    0.87    1.08    -1.86
+  disgust   -0.74    0.51     0.38   -0.08    2.55    -2.62
+  surprise   0.78   -0.36    -0.42   -0.41    0.04     0.36
+
+
+B2.b  Cosine similarity matrices between denoised emotion vectors.
+
+V1_no_thinking_full (L25)
+            joy   sadness   anger   fear   disgust  surprise
+  joy        1.000  -0.385   -0.416  -0.548  -0.576   -0.065
+  sadness   -0.385   1.000   -0.170   0.304  -0.017   -0.280
+  anger     -0.416  -0.170    1.000  -0.077   0.196   -0.275
+  fear      -0.548   0.304   -0.077   1.000   0.093   -0.066
+  disgust   -0.576  -0.017    0.196   0.093   1.000   -0.204
+  surprise  -0.065  -0.280   -0.275  -0.066  -0.204    1.000
+
+V2_thinking_thought (L13)
+            joy   sadness   anger   fear   disgust  surprise
+  joy        1.000   0.027   -0.287  -0.432  -0.385   -0.054
+  sadness    0.027   1.000   -0.165  -0.213  -0.264   -0.389
+  anger     -0.287  -0.165    1.000  -0.098   0.029   -0.293
+  fear      -0.432  -0.213   -0.098   1.000  -0.164    0.010
+  disgust   -0.385  -0.264    0.029  -0.164   1.000   -0.294
+  surprise  -0.054  -0.389   -0.293   0.010  -0.294    1.000
+
+V3_thinking_reply (L25)
+            joy   sadness   anger   fear   disgust  surprise
+  joy        1.000  -0.390   -0.329  -0.600  -0.588   -0.138
+  sadness   -0.390   1.000   -0.186   0.200   0.104   -0.311
+  anger     -0.329  -0.186    1.000  -0.130   0.162   -0.205
+  fear      -0.600   0.200   -0.130   1.000   0.252    0.012
+  disgust   -0.588   0.104    0.162   0.252   1.000   -0.296
+  surprise  -0.138  -0.311   -0.205   0.012  -0.296    1.000
+
+
+B2.c  Pairs with |cosine| > 0.5 (vectors largely anti-aligned).
+
+V1_no_thinking_full (L25):
+  fear ⊥ joy        cos = -0.548
+  disgust ⊥ joy     cos = -0.576
+
+V2_thinking_thought (L13): none above |0.5|.
+
+V3_thinking_reply (L25):
+  fear ⊥ joy        cos = -0.600
+  disgust ⊥ joy     cos = -0.588
+
+
+B3.  HOLDOUT CLASSIFICATION AT VISUALIZATION LAYER
+================================================================
+
+30 stories total, 5 per emotion, sampled from topic-level holdout
+(topics 80-99). For each story, per-token residuals at the set's
+best layer are projected onto each emotion's denoised vector and
+the raw projection is converted to a percentile via the saved
+breakpoints (or, for V1 only, breakpoints computed inline against
+train projections of V1 vectors). Token-level percentiles are
+averaged across the story; argmax = predicted emotion. This
+mirrors the demo's "per-token percentile → per-phase average →
+display" pipeline.
+
+V1_no_thinking_full (L25)  overall = 0.400
+  per-emotion accuracy:
+    joy 0.4   sadness 0.4   anger 0.2   fear 0.4   disgust 0.6   surprise 0.4
+
+  Confusion matrix (rows = TRUE, columns = PRED):
+              joy   sadness   anger   fear   disgust  surprise
+    joy        2       1       0       0       1        1
+    sadness    0       2       0       1       1        1
+    anger      0       2       1       0       1        1
+    fear       0       1       0       2       1        1
+    disgust    0       0       0       0       3        2
+    surprise   1       1       1       0       0        2
+
+V2_thinking_thought (L13)  overall = 0.967
+  per-emotion accuracy:
+    joy 1.0   sadness 1.0   anger 1.0   fear 0.8   disgust 1.0   surprise 1.0
+
+  Confusion matrix:
+              joy   sadness   anger   fear   disgust  surprise
+    joy        5       0       0       0       0        0
+    sadness    0       5       0       0       0        0
+    anger      0       0       5       0       0        0
+    fear       0       0       0       4       1        0
+    disgust    0       0       0       0       5        0
+    surprise   0       0       0       0       0        5
+
+V3_thinking_reply (L25)  overall = 0.600
+  per-emotion accuracy:
+    joy 1.0   sadness 0.8   anger 0.2   fear 0.2   disgust 0.6   surprise 0.8
+
+  Confusion matrix:
+              joy   sadness   anger   fear   disgust  surprise
+    joy        5       0       0       0       0        0
+    sadness    0       4       0       0       1        0
+    anger      0       1       1       2       1        0
+    fear       0       2       0       1       1        1
+    disgust    0       0       0       1       3        1
+    surprise   0       0       1       0       0        4
+
+
+B4.  RANDOM-VECTOR BASELINE
+================================================================
+
+Six random Gaussian unit vectors at 2560-dim (seed 123) per set,
+calibrated against TRAIN-topic train-trial activations using my
+inline empirical-breakpoint routine. Same 30 holdout stories,
+same per-token percentile-average classification path.
+
+V1_no_thinking_full random (L25)  overall = 0.267
+  per-emotion accuracy:
+    joy 0.4   sadness 0.4   anger 0.0   fear 0.0   disgust 0.2   surprise 0.6
+
+  Confusion matrix:
+              joy   sadness   anger   fear   disgust  surprise
+    joy        2       1       1       0       1        0
+    sadness    0       2       0       1       2        0
+    anger      1       0       0       2       0        2
+    fear       1       3       1       0       0        0
+    disgust    0       2       0       0       1        2
+    surprise   1       0       0       1       0        3
+
+V2_thinking_thought random (L13)  overall = 0.200
+  per-emotion accuracy:
+    joy 0.2   sadness 0.2   anger 0.2   fear 0.2   disgust 0.2   surprise 0.2
+
+  Confusion matrix:
+              joy   sadness   anger   fear   disgust  surprise
+    joy        1       3       0       0       0        1
+    sadness    1       1       0       1       0        2
+    anger      2       0       1       2       0        0
+    fear       1       1       0       1       1        1
+    disgust    1       1       0       2       1        0
+    surprise   0       2       1       1       0        1
+
+V3_thinking_reply random (L25)  overall = 0.067
+  per-emotion accuracy:
+    joy 0.0   sadness 0.0   anger 0.2   fear 0.0   disgust 0.2   surprise 0.0
+
+  Confusion matrix:
+              joy   sadness   anger   fear   disgust  surprise
+    joy        0       1       0       3       0        1
+    sadness    0       0       1       1       2        1
+    anger      0       1       1       2       1        0
+    fear       0       2       2       0       1        0
+    disgust    1       1       1       1       1        0
+    surprise   0       2       2       1       0        0
+
+
+B4 vs B3 SUMMARY (the "actual evidence" gap):
+
+         B3 (real vectors)   B4 (random vectors)   gap (pp)
+  V1            0.400              0.267              13.3
+  V2            0.967              0.200              76.7
+  V3            0.600              0.067              53.3
+
+Chance baseline = 1/6 ≈ 0.167.
+
+
+B5.  PERCENTILE BREAKPOINT INTEGRITY
+================================================================
+
+Random seed 7 selected the following five (set, emotion, layer)
+cells. (V1_no_thinking_full has no calibration.json on disk per
+A.7, so the audit script restricted to V2/V3 — verified cells
+were:)
+
+cells = [
+    ("V3_thinking_reply", "fear", 28),
+    ("V3_thinking_reply", "fear", 28),   # collided, treated once
+    ("V3_thinking_reply", "sadness", 13),
+    ("V2_thinking_thought", "sadness", 32),
+    ("V3_thinking_reply", "joy", 21),
+]
+
+For each cell I verified:
+  - breakpoints array length
+  - sorted ascending (precondition of np.interp)
+  - no NaN, no inf
+  - bp[50] equals the median of train-projection-onto-own-vector
+    actually used to BUILD this calibration.json (recomputed by
+    re-projecting all train-trial files matching the saved
+    glob, then taking np.median).
+
+Results:
+
+  V3_thinking_reply / fear / L28
+    length:                          101
+    sorted_ascending:                True
+    any_nan / any_inf:               False / False
+    saved bp[50]:                    -0.157
+    recomputed median of train proj: -0.157
+    bp50 matches recomputed:         True
+    saved n_samples:                 138434
+    recomputed n_samples:            138434
+
+  V3_thinking_reply / sadness / L13
+    length:                          101
+    sorted_ascending:                True
+    any_nan / any_inf:               False / False
+    saved bp[50]:                    2.237
+    recomputed median:               2.237
+    match:                           True
+    n_samples (saved / recomputed):  131475 / 131475
+
+  V2_thinking_thought / sadness / L32
+    length:                          101
+    sorted_ascending:                True
+    any_nan / any_inf:               False / False
+    saved bp[50]:                    7.086
+    recomputed median:               7.086
+    match:                           True
+    n_samples:                       32830 / 32830
+
+  V3_thinking_reply / joy / L21
+    length:                          101
+    sorted_ascending:                True
+    any_nan / any_inf:               False / False
+    saved bp[50]:                    3.073
+    recomputed median:               3.073
+    match:                           True
+    n_samples:                       133299 / 133299
+
+All cells reproduce the saved breakpoint exactly when the same
+glob is used. Note: the "match" here is internal-consistent —
+i.e. the calibration.json on disk was built by the procedure
+described in percentile_calibrate.py. It does NOT mean the
+training set was correctly restricted to train topics (see A.1
+and B3 — the recomputed n_samples figures match what the saved
+file claims, both of which include train-trial files from
+holdout topics).
+
+
+B6.  REPLICATION
+================================================================
+
+Prompt: "I feel hopeless" — 5 independent runs through the live
+demo backend (`POST /chat`) with current config (Gemma 4 E4B in
+4-bit nf4, temperature=0.7, top_p=0.95, enable_thinking=True,
+max_new_tokens=2048).
+
+Per-run summary:
+
+  run 1:  thought=561 tok, reply=365 tok, 24.4s
+  run 2:  thought=539 tok, reply=563 tok, 32.7s
+  run 3:  thought=478 tok, reply=401 tok, 23.9s
+  run 4:  thought=568 tok, reply=450 tok, 26.4s
+  run 5:  thought=499 tok, reply=415 tok, 23.6s
+
+A thought block was produced for all 5 runs.
+
+Reply first-100-chars per run (for qualitative inspection):
+  run 1: "**Please know that you do not have to go through this feeling alone. I am here to listen, but becaus"
+  run 2: "Please know that I am here to listen, and I am so sorry that you are feeling this way. **Your feelin"
+  run 3: "I am so sorry that you are feeling this way. Please know that your feelings are valid, and you do no"
+  run 4: "I am so sorry that you are feeling this way. Please know that you do not have to carry this feeling "
+  run 5: "I am so sorry that you are feeling this way. Please know that you are not alone, and these feelings,"
+
+
+Displayed PERCENTILE values per run (averages over all phase
+tokens, at the demo's default layers — thought L13, reply L25):
+
+  run 1
+    thought L13: joy=24.8  sadness=56.6  anger=33.6  fear=62.3  disgust=26.9  surprise=12.0
+    reply   L25: joy=36.0  sadness=68.7  anger=42.1  fear=53.9  disgust=22.6  surprise=17.0
+  run 2
+    thought L13: joy=20.2  sadness=56.0  anger=34.6  fear=68.0  disgust=23.7  surprise=12.4
+    reply   L25: joy=38.7  sadness=63.2  anger=39.4  fear=59.4  disgust=18.2  surprise=17.7
+  run 3
+    thought L13: joy=24.0  sadness=59.9  anger=28.9  fear=59.8  disgust=29.2  surprise=12.8
+    reply   L25: joy=35.5  sadness=66.2  anger=41.7  fear=52.9  disgust=18.7  surprise=17.9
+  run 4
+    thought L13: joy=25.0  sadness=57.1  anger=31.8  fear=60.8  disgust=29.2  surprise=12.8
+    reply   L25: joy=38.2  sadness=69.4  anger=35.8  fear=57.1  disgust=19.3  surprise=13.8
+  run 5
+    thought L13: joy=24.3  sadness=58.4  anger=33.1  fear=62.3  disgust=24.9  surprise=13.7
+    reply   L25: joy=36.6  sadness=63.6  anger=39.5  fear=60.3  disgust=15.9  surprise=20.3
+
+
+Cross-run mean ± stdev (n=5, ddof=1):
+
+  thought L13:
+    joy:       mean=23.66  sd=1.96  range=[20.2, 25.0]
+    sadness:   mean=57.59  sd=1.59  range=[56.0, 59.9]
+    anger:     mean=32.39  sd=2.22  range=[28.9, 34.6]
+    fear:      mean=62.66  sd=3.19  range=[59.8, 68.0]
+    disgust:   mean=26.77  sd=2.48  range=[23.7, 29.2]
+    surprise:  mean=12.77  sd=0.64  range=[12.0, 13.7]
+
+  reply L25:
+    joy:       mean=37.00  sd=1.40  range=[35.5, 38.7]
+    sadness:   mean=66.22  sd=2.82  range=[63.2, 69.4]
+    anger:     mean=39.70  sd=2.53  range=[35.8, 42.1]
+    fear:      mean=56.71  sd=3.28  range=[52.9, 60.3]
+    disgust:   mean=18.93  sd=2.42  range=[15.9, 22.6]
+    surprise:  mean=17.33  sd=2.32  range=[13.8, 20.3]
+
+
+Derived RAW projection averages per run (inverted from the
+displayed percentile via np.interp(pct, [0..100], breakpoints) —
+i.e. the raw dot-product value that the saved breakpoints place
+at the given percentile):
+
+  run 1
+    thought L13:  joy=2.50  sadness=-0.67  anger=0.43  fear=0.69  disgust=2.13  surprise=-3.88
+    reply   L25:  joy=1.93  sadness=3.12   anger=-0.12 fear=0.53  disgust=-0.48 surprise=-2.19
+  run 2
+    thought L13:  joy=2.01  sadness=-0.72  anger=0.48  fear=1.39  disgust=1.81  surprise=-3.84
+    reply   L25:  joy=2.45  sadness=2.63   anger=-0.34 fear=0.83  disgust=-1.02 surprise=-2.09
+  run 3
+    thought L13:  joy=2.42  sadness=-0.40  anger=0.15  fear=0.42  disgust=2.35  surprise=-3.79
+    reply   L25:  joy=1.82  sadness=2.90   anger=-0.15 fear=0.47  disgust=-0.96 surprise=-2.08
+  run 4
+    thought L13:  joy=2.52  sadness=-0.63  anger=0.32  fear=0.52  disgust=2.35  surprise=-3.79
+    reply   L25:  joy=2.34  sadness=3.18   anger=-0.62 fear=0.70  disgust=-0.87 surprise=-2.65
+  run 5
+    thought L13:  joy=2.45  sadness=-0.53  anger=0.41  fear=0.69  disgust=1.92  surprise=-3.69
+    reply   L25:  joy=2.03  sadness=2.67   anger=-0.33 fear=0.89  disgust=-1.32 surprise=-1.80
+
+
+B7.  TOKEN-LEVEL INSPECTION
+================================================================
+
+Run 1 reply phase, layer 25, sadness vector (V3 thinking_reply
+denoised, L25). Total reply tokens captured = 365. Raw projection
+values shown are the inversion of the displayed percentile via
+the saved breakpoints (bp[0]=-13.641, bp[50]=1.539, bp[100]=18.072).
+
+  idx  text                  raw_proj    pct
+   0   "**"                    2.228     58.5
+   1   "Please"                2.466     61.3
+   2   " know"                 3.962     76.8
+   3   " that"                 4.906     84.3
+   4   " you"                  4.234     79.2
+   5   " do"                   4.597     82.1
+   6   " not"                  5.776     89.5
+   7   " have"                 9.060     98.4
+   8   " to"                   8.063     97.0
+   9   " go"                   8.744     98.1
+  10   " through"              3.984     77.0
+  11   " this"                 6.489     92.7
+  12   " feeling"              7.412     95.6
+  13   " alone"                8.632     97.9
+  14   "."                    10.015     99.0
+  15   " I"                    5.602     88.6
+  16   " am"                   5.752     89.4
+  17   " here"                 4.922     84.4
+  18   " to"                   7.458     95.7
+  19   " listen"               8.580     97.9
+  20   ","                     6.190     91.5
+  21   " but"                  5.458     87.8
+  22   " because"              0.755     40.2
+  23   " I"                    0.647     38.8
+  24   " am"                   2.595     62.8
+  25   " an"                   3.819     75.5
+  26   " AI"                   4.291     79.7
+  27   ","                     3.106     68.5
+  28   " I"                    1.743     52.5
+  29   " am"                   2.465     61.3
+  30   " are"                  5.859     90.0
+  31   " valid"                8.598     97.9
+  32   "."                     7.435     95.6
+  33   " Hop"                  7.243     95.1
+  34   "eless"                 5.270     86.7
+  35   "ness"                  8.108     97.1
+  36   " is"                  11.222     99.2
+  37   " an"                  10.867     99.1
+  38   " incredibly"           9.751     99.0
+  39   " heavy"               10.460     99.1
+   ...
+  Mid-reply samples (every ~20th token):
+  step 593 " I"               (raw  0.529, pct 52.5)
+  step 607 " danger"          (raw -2.39,  pct  3.0)
+  step 621 " **"              (raw -0.97,  pct 21.2)
+  step 635 " feeling"         (raw -0.84,  pct  3.4)
+  step 649 " right"           (raw -3.55,  pct  1.1)
+  step 663 " or"              (raw -0.76,  pct 22.4)
+  step 705 ":**"              (raw -2.45,  pct  5.6)
+  step 719 "---"              (raw  0.71,  pct 50.3)
+  step 733 " safe"            (raw  6.86,  pct 94.7)
+  step 747 " are"             (raw  5.96,  pct 90.0)
+  step 761 " and"             (raw 10.18,  pct 98.5)
+  step 775 " want"            (raw 10.21,  pct 99.0)
+  step 789 " can"             (raw  6.42,  pct 95.6)
+  step 803 " compassion…"     (raw  5.32,  pct 89.6)
+  step 817 " the"             (raw  6.18,  pct 90.6)
+  step 831 "\n\n"             (raw  8.39,  pct 96.2)
+  step 845 " exercises"       (raw  6.49,  pct 91.4)
+  step 859 "Dist"             (raw 10.30,  pct 99.1)
+  step 873 " movie"           (raw 10.31,  pct 99.1)
+  step 887 "3"                (raw  9.65,  pct 98.3)
+  step 901 " rage"            (raw  6.91,  pct 95.7)
+  step 915 "Please"           (raw 10.16,  pct 99.0)
+  step 929 ".**"              (raw  9.16,  pct 98.5)
+
+Observations available for the reviewer to interpret:
+  - The model's reply text is broadly empathetic/de-escalating
+    ("you are not alone", "feelings are valid", "compassion
+    exercises", etc.).
+  - Per-token raw projection onto the sadness vector swings
+    between approx. -3.5 (at "right", step 649) and +11 (at " is",
+    step 36). Across the whole reply the mean raw projection
+    onto sadness is 3.12 (post-aggregate; matches B6 above).
+  - High-percentile sadness tokens (>95) tend to be content words
+    like "alone", "feeling", "valid", "want", "compassion",
+    "safe", "are", "rage", "Please", and the literal substring
+    "Hopeless". Low-percentile sadness tokens tend to be
+    formatting / dot-style markup ("**", "---", ":**").
+
+
+B8.  INFERENCE PATH CODE TRACE
+================================================================
+
+This section traces the exact code path from `POST /chat` to a
+yielded SSE event with `displayed percentile values`.
+
+1. ENTRY: backend/main.py:104-136
+   `@app.post("/chat")` calls `_engine.generate_stream(message,
+   history)`, wrapping each yielded dict in `sse_starlette`
+   `EventSourceResponse`.
+
+2. PROMPT CONSTRUCTION: backend/inference.py:_build_prompt
+   (lines 285-308)
+   - msgs = [{role: user, content: text}], prefixed with history.
+   - text = tokenizer.apply_chat_template(msgs,
+                                          tokenize=False,
+                                          add_generation_prompt=True,
+                                          enable_thinking=True)
+   - input_ids = tokenizer(text, return_tensors="pt").input_ids.to(device)
+   - NOTE: this is the chat-template prompt; pipeline/
+     extract_activations.py does NOT apply this template.
+
+3. INITIAL FORWARD: backend/inference.py:419-421
+       next_id, past_key_values = self._step(input_ids, None,
+                                             do_sample=True)
+   - self._step (lines 367-390) calls self.model(input_ids,
+     past_key_values=None, use_cache=True).
+   - During this forward, registered hooks on
+     self.layers[L] for L in TARGET_LAYERS = [13, 17, 21, 25, 28, 32]
+     (line 38) fire and write to self._captured[L] the layer's
+     output[0] (the residual stream after layer L).
+   - Hooks were attached in _attach_hooks (line 246-260) on
+     self.layers = self.model.model.language_model.layers
+     (line 145) — direct indexing into Gemma's 42-layer stack.
+   - Layer indexing convention: 0-indexed integers into the
+     HF layer list. pipeline/extract_activations.py uses the same
+     0-indexed integers (extract_activations.py:228 — nnsight
+     attribute path also indexes into .layers[L]). The
+     calibration JSON keys are string-form integers
+     ({"13": ..., "17": ...}); the live backend re-stringifies
+     L when looking up (inference.py:298). Mapping is consistent.
+
+4. GENERATION LOOP: backend/inference.py:423-495.
+   Per iteration, with self._captured containing the most-recent
+   forward's hidden states:
+
+   a. Stop check (line 424-425): break if next_id in
+      self.stop_token_ids = {eos, <turn|>, <end_of_turn>} (line
+      154-162).
+
+   b. Channel marker detection (lines 431-438):
+        if next_id == self.channel_open_id   → phase = "thought"
+        elif next_id == self.channel_close_id → phase = "reply"
+      Phase starts at "reply" (line 412), is updated in-place.
+
+   c. Decode (lines 442-447): generated_ids.append(next_id), then
+      tokenizer.decode(generated_ids, skip_special_tokens=True).
+
+   d. PROJECTION (line 455):
+        all_raw = self.project_all_layers_raw(scope=phase)
+      → calls self._project(scope, L) for L in TARGET_LAYERS.
+
+      _project (lines 296-309):
+        hidden = self._captured[layer]               # (1, seq_len, 2560)
+        last = hidden[0, -1, :].to(torch.float32)    # (2560,)
+        vecs = self.vectors[scope][layer]            # (6, 2560)
+        scores = (vecs @ last).cpu().numpy()         # (6,)
+        return {emo: float(scores[i]) for i, emo in enumerate(EMOTIONS)}
+
+      `last` is the residual at the LAST position of whatever
+      forward most recently fired the hook. For step 0 of the
+      loop, that is the prompt's last position. For subsequent
+      steps it is the previously generated token's position.
+
+      No cutoff filter. No averaging within the projection step.
+
+   e. NORMALIZATION (lines 456-459):
+        all_thinking = {str(L): self._normalize(all_raw[L], phase, L)
+                        for L in TARGET_LAYERS}
+
+      _normalize (lines 326-368):
+        - Picks bp = self._bp_cache[scope][layer][emo] when
+          available (cache built at __init__ from
+          calibration.json — lines 205-235).
+        - Computes pct = float(np.interp(val, bp,
+                                         PERCENTILE_GRID))
+          where PERCENTILE_GRID = np.linspace(0, 100, 101) (line 70).
+        - Clamps via max(0, min(100, pct)).
+        - Falls back to legacy shift-and-scale or per-emotion
+          min/max if breakpoints aren't present.
+
+   f. Suppression decision (lines 464-467): marker tokens
+      (is_marker) and the channel-label "thought\n" tokens
+      (count = self.channel_label_token_count, computed at init
+      from tokenizer("thought\n")) are flagged. label_skip_remaining
+      decrements per non-marker token after a marker.
+
+   g. STEP TO NEXT TOKEN (lines 470-475):
+        next_input = torch.tensor([[next_id]], ...)
+        next_id, past_key_values = self._step(next_input,
+                                              past_key_values,
+                                              do_sample=True)
+      During this _step the hook fires and self._captured[L] is
+      updated to (1, 1, 2560) — the residual at this token's
+      position. This new capture is used in the NEXT iteration's
+      projection.
+
+   h. RATE-LIMIT (lines 480-485): MAX_TOKENS_PER_SEC = 40.0
+      enforces a minimum interval between yields.
+
+   i. YIELD (lines 487-493):
+        yield {
+          "type": "token",
+          "text": delta,
+          "thinking": all_thinking,        # {str(L): {emo: float in [0,100]}}
+          "step": step,
+          "phase": phase,
+        }
+      Skipped when suppress_emit or not delta.
+
+5. FRONTEND CONSUMPTION (components/Workspace.tsx:382-466)
+   - For each `type: token` event:
+       layeredThought / layeredReply (LayeredEmotionValues =
+         Record<Layer, EmotionValues>) accumulates that token's
+         per-layer values for its phase.
+       tokenLog (PerTokenData[]) stores {charEnd, phase, thinking}
+         per token.
+       Snapshots are pushed every SNAPSHOT_EVERY_N_TOKENS = 5 with
+         the running per-phase average via
+         averageLayeredForPhase().
+   - On the first reply token, layeredThought is collapsed to the
+     full-thought-block average (Workspace.tsx:392-403).
+   - On `type: done`, per-phase final averages are written into a
+     Turn record (Workspace.tsx:470-497) and snapped into rawBars.
+
+   The Bar component (EmotionPanel.tsx) renders the halo at
+   layered.thinkingThought[thoughtLayer][emotion] and the dot at
+   layered.thinkingReply[replyLayer][emotion]; per-token values
+   thread through unchanged (no further transformation in the UI).
+
+
+Breakpoint cache key structure (inference.py:215-235):
+   self._bp_cache : dict[scope, dict[layer, dict[emotion, np.ndarray]]]
+   - scope ∈ {"reply", "thought"}
+   - layer ∈ TARGET_LAYERS
+   - emotion ∈ EMOTIONS
+   - value: float32 array of length 101 (breakpoints at every 1%
+     of the calibration distribution).
+   Cached at engine init for hot-path access; np.interp is called
+   per-token per-layer per-emotion.
+
+
+Cutoff applied at inference: NO. There is no per-position filter
+inside the generate_stream loop. Token position 0..N-1 of each
+phase is projected. (See A.3 for the consequences vs. the vector
+training cutoff=50 choice.)
+
+
+================================================================
+END OF REPORT
+================================================================

@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from pathlib import Path
@@ -45,21 +46,53 @@ from backend.inference import (
 
 ACTIVATIONS_DIR = DATA_DIR / "thinking" / "activations"
 
+# Pre-registered topic split (commit 8a6f5f7). Calibration uses ONLY the
+# train-topic half — including holdout topics here would leak the
+# pre-registered held-out distribution into the percentile reference and
+# overstate how "training-grounded" the y-axis actually is.
+TOPIC_SPLIT_PATH = Path(__file__).parent / "topic_split.json"
+_topic_split = json.loads(TOPIC_SPLIT_PATH.read_text())
+TRAIN_TOPICS: set[int] = set(_topic_split["train_topics"])
+
+# Filename topic-index parser. Matches both story and thought NPZ names.
+TOPIC_IDX_RE = re.compile(r"_topic_(\d+)_split_")
+
 # 101 anchor points spanning [0, 100] in 1% steps. Stored breakpoints
 # at these positions; np.interp(v, breakpoints, PERCENTILE_GRID) gives
 # the percentile rank of `v` against the calibration distribution.
 PERCENTILE_GRID = np.linspace(0.0, 100.0, 101)
 
 
+def _topic_idx_from_name(name: str) -> int | None:
+    m = TOPIC_IDX_RE.search(name)
+    return int(m.group(1)) if m else None
+
+
 def files_for(emotion: str, scope: str) -> list[Path]:
-    """Train-split files for this emotion + scope, sorted for repeatability."""
+    """Train-split, TRAIN-TOPIC-only files for this emotion + scope.
+
+    Filtering is enforced by two independent gates:
+      1. Filename glob — selects the trial-level train split
+         ("_split_train_") for the requested scope (story vs thought).
+      2. Topic-index parse — drops any file whose topic_idx is in the
+         pre-registered holdout half (topics 80-99). The earlier version
+         of this script omitted gate 2, which let ~20% of each emotion's
+         calibration corpus come from holdout topics.
+    """
     if scope == "reply":
         pattern = f"{emotion}_topic_*_split_train_story_*.npz"
     elif scope == "thought":
         pattern = f"{emotion}_topic_*_split_train_thought.npz"
     else:
         raise ValueError(f"unknown scope: {scope}")
-    return sorted(ACTIVATIONS_DIR.glob(pattern))
+    matched = sorted(ACTIVATIONS_DIR.glob(pattern))
+    out: list[Path] = []
+    for p in matched:
+        topic_idx = _topic_idx_from_name(p.name)
+        if topic_idx is None or topic_idx not in TRAIN_TOPICS:
+            continue
+        out.append(p)
+    return out
 
 
 def load_emotion_vectors(scope: str) -> dict[str, dict[int, np.ndarray]]:
@@ -151,7 +184,9 @@ def calibrate_scope(scope: str) -> dict:
         "target_layers": TARGET_LAYERS,
         "emotions": EMOTIONS,
         "percentile_grid": PERCENTILE_GRID.tolist(),
-        "source": "contrastive corpus train-split",
+        "source": "contrastive corpus, TRAIN topics only (pre-reg 8a6f5f7)",
+        "topic_split_file": str(TOPIC_SPLIT_PATH),
+        "n_train_topics": len(TRAIN_TOPICS),
     }
     return cal
 

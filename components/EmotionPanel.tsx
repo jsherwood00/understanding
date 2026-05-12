@@ -7,6 +7,7 @@ import {
   type Turn,
 } from "@/lib/emotions";
 import { LayerSelector, type Layer } from "@/components/LayerSelector";
+import { ViewModeToggle, type ViewMode } from "@/components/ViewModeToggle";
 
 // Short 3-letter labels under each bar so they always fit — full names
 // like SADNESS / DISGUST / SURPRISE overflow the column at any reasonable
@@ -49,6 +50,10 @@ interface EmotionPanelProps {
    *  (halo, reply dot, both sentiment ticks). */
   valuesOn: boolean;
   onValuesToggle: (next: boolean) => void;
+  /** Three-way view switch — rendered inline next to the legend so it
+   *  sits flush against the legend's right edge with no awkward gap. */
+  viewMode: ViewMode;
+  onViewModeChange: (next: ViewMode) => void;
 }
 
 const CLASSIFIER_NAME = "deberta-v3-large-zeroshot-v2.0";
@@ -56,7 +61,7 @@ const CLASSIFIER_NAME = "deberta-v3-large-zeroshot-v2.0";
 export function EmotionPanel(props: EmotionPanelProps) {
   return (
     <section className="flex h-full min-h-0 flex-col px-10 py-8">
-      <div className="flex items-start gap-3">
+      <div className="flex flex-wrap items-start gap-x-3 gap-y-3">
         <div className="flex flex-col gap-3 rounded-md border border-ink-faint/25 px-3 py-2">
           <div className="flex flex-col gap-1">
             <LayerSelector
@@ -86,6 +91,10 @@ export function EmotionPanel(props: EmotionPanelProps) {
           </div>
         </div>
         <Legend classifierOn={props.classifierOn} />
+        <ViewModeToggle
+          mode={props.viewMode}
+          onChange={props.onViewModeChange}
+        />
       </div>
 
       <div className="mt-8 flex min-h-0 flex-1 items-stretch gap-3">
