@@ -1,26 +1,42 @@
 {
+  "_criterion": "topic-level holdout (topics 80-99). Per-emotion best layer = argmax recall on that emotion. Global best layer = argmax overall 6-way accuracy.",
+  "_source_file": "holdout_classification_topic_level.json",
+  "_global_best_layer": 13,
+  "_global_best_overall_accuracy": 0.45666666666666667,
   "joy": {
     "layer": 13,
-    "norm": 3.319972515106201
+    "recall": 0.9433333333333334,
+    "precision": 0.7839335180055401,
+    "criterion": "max recall on topic-level holdout"
   },
   "sadness": {
-    "layer": 13,
-    "norm": 1.5759092569351196
+    "layer": 32,
+    "recall": 1.0,
+    "precision": 0.17688679245283018,
+    "criterion": "max recall on topic-level holdout"
   },
   "anger": {
-    "layer": 13,
-    "norm": 1.8048118352890015
+    "layer": 17,
+    "recall": 0.9266666666666666,
+    "precision": 0.26251180358829085,
+    "criterion": "max recall on topic-level holdout"
   },
   "fear": {
-    "layer": 13,
-    "norm": 1.319429636001587
+    "layer": 25,
+    "recall": 0.03333333333333333,
+    "precision": 0.35714285714285715,
+    "criterion": "max recall on topic-level holdout"
   },
   "surprise": {
-    "layer": 13,
-    "norm": 1.5687196254730225
+    "layer": 17,
+    "recall": 0.4766666666666667,
+    "precision": 0.4294294294294294,
+    "criterion": "max recall on topic-level holdout"
   },
   "disgust": {
-    "layer": 13,
-    "norm": 1.5496588945388794
+    "layer": 25,
+    "recall": 0.19666666666666666,
+    "precision": 0.5728155339805825,
+    "criterion": "max recall on topic-level holdout"
   }
 }

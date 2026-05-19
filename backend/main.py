@@ -45,13 +45,22 @@ app = FastAPI(title="understanding-backend", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_middleware(SlowAPIMiddleware)
 
-# Local-dev CORS: Next.js runs on :3000.
+# CORS — default to local dev (Next.js on :3000). In production set the
+# ALLOWED_ORIGINS env var to a comma-separated list of accepted Vercel
+# origins (e.g. "https://understanding.vercel.app,https://*.vercel.app").
+# A bare "*" disables the allowlist entirely (only useful for debugging).
+_default_origins = "http://localhost:3000,http://127.0.0.1:3000"
+_env_origins = os.environ.get("ALLOWED_ORIGINS", _default_origins)
+_origins = [o.strip() for o in _env_origins.split(",") if o.strip()]
+
+# `allow_origin_regex` covers preview deployments (*.vercel.app) — opt in
+# via env if needed. Default off.
+_origin_regex = os.environ.get("ALLOWED_ORIGIN_REGEX") or None
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origins=_origins,
+    allow_origin_regex=_origin_regex,
     allow_credentials=False,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],

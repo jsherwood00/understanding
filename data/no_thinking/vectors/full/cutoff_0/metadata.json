@@ -1,0 +1,27 @@
+{
+  "set": "V1_no_thinking_full",
+  "scope_directory": "data/no_thinking/vectors/full",
+  "cutoff": 0,
+  "denoised": true,
+  "neutral_pc_variance_target": 0.5,
+  "neutral_corpus": "neutral_no_thinking",
+  "neutral_pattern": "*_story_*.npz",
+  "neutral_pc_count_at_build_time": "see compute_vectors.py log output",
+  "training_source": {
+    "corpus": "no_thinking",
+    "file_pattern": "*_story_*.npz",
+    "n_files_found_at_writeback": 8988,
+    "train_topics": "0-79 (pre-registered, see pipeline/topic_split.json)",
+    "train_trials": "0-11 within each topic"
+  },
+  "calibration": null,
+  "missing_vector_files": [],
+  "git_commit_at_write_time": "5cb2a48f0bd82ab6153067e1507dabbafc5a513b",
+  "wrote_at": "2026-05-18 23:40:52",
+  "written_by": "pipeline/write_vector_metadata.py",
+  "consumed_by": [
+    "backend/inference.py (live demo)",
+    "pipeline/validation.py (holdout classification)",
+    "pipeline/build_emotion_geometry.py (MDS embedding)"
+  ]
+}

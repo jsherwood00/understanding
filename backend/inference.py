@@ -446,25 +446,32 @@ class EmotionEngine:
                     delta = decoded[len(full_text_so_far):]
                     full_text_so_far = decoded
 
-                    # Project + normalize at every target layer, against the
-                    # scope (V2 vs V3 vectors) matching this token's phase.
-                    # Thought-phase tokens get the V2 thought-scope reading
-                    # (the dashed line); reply-phase tokens get V3 reply-
-                    # scope (the halo). ~10us total over single-scope,
-                    # single-layer projection, negligible.
-                    all_raw = self.project_all_layers_raw(scope=phase)
-                    all_thinking = {
-                        str(L): self._normalize(all_raw[L], phase, L)
-                        for L in TARGET_LAYERS
-                    }
-
                     # Drop marker tokens (no visible text anyway, since
                     # decode strips specials) and the channel-label tokens
-                    # that follow <|channel> ("thought\n").
+                    # that follow <|channel> ("thought\n"). Compute
+                    # suppression FIRST so we can also skip the projection
+                    # for these tokens — their residuals are channel-scaffold
+                    # noise, not the model's actual phase content, and the
+                    # event would be hidden anyway.
                     suppress_emit = is_marker
                     if not is_marker and label_skip_remaining > 0:
                         label_skip_remaining -= 1
                         suppress_emit = True
+
+                    # Project + normalize at every target layer, against the
+                    # scope (V2 vs V3 vectors) matching this token's phase.
+                    # Thought-phase tokens get the V2 thought-scope reading
+                    # (the dashed line); reply-phase tokens get V3 reply-
+                    # scope (the halo). Only computed for tokens we'll
+                    # actually emit; suppressed tokens get an empty payload.
+                    if suppress_emit:
+                        all_thinking: dict[str, dict[str, float]] = {}
+                    else:
+                        all_raw = self.project_all_layers_raw(scope=phase)
+                        all_thinking = {
+                            str(L): self._normalize(all_raw[L], phase, L)
+                            for L in TARGET_LAYERS
+                        }
 
                     # Always advance to next token even if we skipped emit.
                     next_input = torch.tensor(

@@ -171,12 +171,6 @@ export function Workspace() {
       /* ignore */
     }
   };
-  /** Flips true the moment the streaming turn enters its reply phase
-   *  (first reply-phase token arrives). Resets on each new submit. The
-   *  EmotionPanel uses this to gate the diff label so it doesn't read
-   *  meaninglessly negative during the thought-only prefix. */
-  const [replyStarted, setReplyStarted] = useState(false);
-
   const abortControllerRef = useRef<AbortController | null>(null);
   const replayAbortRef = useRef(false);
   const savedViewRef = useRef<{ turn: number | null; snap: number } | null>(
@@ -331,7 +325,6 @@ export function Workspace() {
     setMessages(nextMessages);
     setInput("");
     setIsGenerating(true);
-    setReplyStarted(false);
     setStreamingContent("");
     setStreamingThought("");
     // Clear both NLI readings — no post-hoc sentiment for this turn yet.
@@ -417,7 +410,6 @@ export function Workspace() {
                 setStreamingThought(accumulatedThought);
               } else {
                 if (accumulatedReply.length === 0) {
-                  setReplyStarted(true);
                   // First reply token — collapse the live thought halo
                   // into the whole-thought-block average so the
                   // visualization settles before the reply phase begins
@@ -748,7 +740,6 @@ export function Workspace() {
             onClassifierToggle={setClassifierOn}
             valuesOn={valuesOn}
             onValuesToggle={setValuesOn}
-            replyStarted={replyStarted}
             viewMode={viewMode}
             onViewModeChange={persistViewMode}
           />

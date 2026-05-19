@@ -34,10 +34,6 @@ interface EmotionPanelProps {
   onStopReplay: () => void;
   isReplaying: boolean;
   isGenerating: boolean;
-  /** True once the streaming turn has emitted at least one reply token.
-   *  Gates the diff label so it doesn't show `-{thought_pct}` during the
-   *  thought-only prefix of a turn. */
-  replyStarted: boolean;
   thoughtLayer: Layer;
   replyLayer: Layer;
   onThoughtLayerChange: (next: Layer) => void;

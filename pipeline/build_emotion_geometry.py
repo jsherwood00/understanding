@@ -25,7 +25,7 @@ import numpy as np
 from sklearn.manifold import MDS
 
 ROOT = Path("/home/johnk/Documents/understanding")
-EMOTIONS = ["joy", "sadness", "anger", "fear", "disgust", "surprise"]
+EMOTIONS = ["joy", "sadness", "anger", "fear", "surprise", "disgust"]
 
 SCOPES = {
     "reply": {

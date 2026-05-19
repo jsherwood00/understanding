@@ -1,5 +1,4 @@
 {
-  "_criterion": "computed at the global accuracy-best layer (max overall accuracy on topic-level holdout)",
   "layer": 32,
   "matrix": {
     "joy": {
